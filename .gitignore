@@ -3,4 +3,3 @@ build/
 tests/*.out
 tests/*.s
 tests/*.o
-docs/node_modules/

@@ -5,8 +5,6 @@
 [![Built with C11](https://img.shields.io/badge/Compiler-C11-teal.svg)](#)
 [![Tests: Passing](https://img.shields.io/badge/Tests-passing-brightgreen.svg)](#)
 
-> 📖 **Live Documentation & Language Guide**: [https://don2e4.github.io/winds](https://don2e4.github.io/winds) (also available locally in `docs/index.html`)
-
 `winds` is an ultra-fast, lightweight C++ compiler targeting **x86_64 Linux**. Built in strict C11 with zero external LLVM dependencies, `winds` is designed to provide high-quality compilation at a fraction of the binary size and compile latency of Clang/GCC.
 
 ---
