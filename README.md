@@ -103,11 +103,19 @@
 - GCC or Clang (to compile `winds` itself)
 - Standard GNU Assembler (`as`) and Linker (`gcc` or `ld`)
 
-### Build `winds`
+### Build & Install `winds`
 ```bash
+# Build binary to bin/winds
 make
+
+# Install globally to ~/.local/bin (accessible anywhere)
+make install
 ```
-The executable will be placed in `bin/winds`.
+
+> **Note:** To install system-wide to `/usr/local/bin`, run:
+> ```bash
+> sudo make install PREFIX=/usr/local
+> ```
 
 ### Run Test Suite
 ```bash
@@ -130,6 +138,8 @@ Directly compares compilation throughput and binary footprint against system `cl
 
 ## 💻 CLI Usage
 
+Once installed, invoke `winds` directly anywhere from your terminal:
+
 ```bash
 winds [options] <input.cpp>
 
@@ -140,26 +150,26 @@ Options:
   -O0, -O1, -O2  Optimization level (default: -O1)
   --emit-ast     Dump Abstract Syntax Tree to stdout
   --emit-ir      Dump Three-Address Intermediate Representation
-  -v             Verbose output (shows subprocess commands)
+  -v             Verbose output (shows subprocess commands & timing)
   --help         Display available options
   --version      Display compiler version
 ```
 
 ### Examples
-Compile directly to binary:
+Compile directly to binary from any directory:
 ```bash
-bin/winds main.cpp -o app
-./app
+winds example.cpp -o example
+./example
 ```
 
 Emit intermediate representation:
 ```bash
-bin/winds --emit-ir main.cpp
+winds --emit-ir example.cpp
 ```
 
-Emit x86_64 assembly:
+Emit x86_64 GNU assembly:
 ```bash
-bin/winds -S main.cpp -o main.s
+winds -S example.cpp -o example.s
 ```
 
 ---

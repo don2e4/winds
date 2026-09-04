@@ -16,10 +16,13 @@ SRCS = src/arena.c \
        src/driver.c \
        src/main.c
 
+PREFIX ?= $(HOME)/.local
+INSTALL_BIN ?= $(PREFIX)/bin
+
 OBJS = $(SRCS:src/%.c=$(BUILD_DIR)/%.o)
 TARGET = $(BIN_DIR)/winds
 
-.PHONY: all clean test benchmark install
+.PHONY: all clean test benchmark install uninstall
 
 all: $(TARGET)
 
@@ -54,3 +57,12 @@ test: $(TARGET)
 benchmark: $(TARGET)
 	@python3 tests/benchmark.py $(TARGET)
 
+install: $(TARGET)
+	mkdir -p $(INSTALL_BIN)
+	cp $(TARGET) $(INSTALL_BIN)/winds
+	chmod 755 $(INSTALL_BIN)/winds
+	@echo "winds successfully installed to $(INSTALL_BIN)/winds"
+
+uninstall:
+	rm -f $(INSTALL_BIN)/winds
+	@echo "winds uninstalled from $(INSTALL_BIN)/winds"
