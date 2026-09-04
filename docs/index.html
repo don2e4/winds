@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>winds — Lightweight, High-Performance C++ Compiler</title>
+  <meta name="description" content="Ultra-fast, lightweight C++ compiler for Linux x86_64. 0.3ms compilation latency, 325KB binary size, zero LLVM dependencies.">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+</head>
+<body>
+
+  <!-- Sticky Top Navigation -->
+  <header class="top-nav">
+    <a href="#" class="nav-brand">
+      <div class="brand-icon">W</div>
+      <span>winds</span>
+      <span class="brand-badge">v0.1.0</span>
+    </a>
+
+    <ul class="nav-links">
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#quickstart">Quick Start</a></li>
+      <li><a href="#reference">Language Reference</a></li>
+      <li><a href="#cli-options">CLI Options</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#faq">FAQ</a></li>
+    </ul>
+
+    <div class="nav-actions">
+      <a href="https://github.com/don2e4/winds" target="_blank" rel="noopener noreferrer" class="github-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+        </svg>
+        GitHub
+      </a>
+      <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle navigation">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 6h16M4 12h16M4 18h16"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar" id="sidebar">
+      <div class="search-box">
+        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/>
+          <path d="m21 21-4.3-4.3"/>
+        </svg>
+        <input type="text" id="docSearch" placeholder="Filter documentation..." autocomplete="off">
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-heading">Getting Started</div>
+        <ul class="sidebar-links">
+          <li><a href="#overview">Overview & Highlights</a></li>
+          <li><a href="#benchmarks">Performance Benchmarks</a></li>
+          <li><a href="#quickstart">Quick Start & Install</a></li>
+        </ul>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-heading">Language Reference</div>
+        <ul class="sidebar-links">
+          <li><a href="#ref-classes">Classes & Structs</a></li>
+          <li><a href="#ref-ctors">Constructors & RAII</a></li>
+          <li><a href="#ref-memory">Dynamic Memory (new/delete)</a></li>
+          <li><a href="#ref-namespaces">Namespaces & Scopes</a></li>
+          <li><a href="#ref-overload">Overload Resolution</a></li>
+          <li><a href="#ref-refs">References & Pointers</a></li>
+          <li><a href="#ref-control">Control Flow</a></li>
+        </ul>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-heading">Toolchain & Internals</div>
+        <ul class="sidebar-links">
+          <li><a href="#cli-options">CLI Options & Flags</a></li>
+          <li><a href="#architecture">Architecture Pipeline</a></li>
+          <li><a href="#showcase">Interactive IR Showcase</a></li>
+        </ul>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-heading">Community & Support</div>
+        <ul class="sidebar-links">
+          <li><a href="#faq">Frequently Asked Questions</a></li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+
+      <!-- Hero Header -->
+      <section class="hero">
+        <div class="hero-pill">
+          <span>⚡</span> Ultra-Fast C++ Compiler for Linux x86_64
+        </div>
+        <h1>High-Performance C++<br>Without the Bloat</h1>
+        <p>
+          <strong>winds</strong> compiles modern C++ code at <strong>0.3 ms</strong> latency with a tiny <strong>325 KB</strong> footprint. Written in strict C11 with zero LLVM dependencies, delivering native System V AMD64 machine code directly.
+        </p>
+        <div class="hero-cta">
+          <a href="#quickstart" class="btn-primary">Get Started in 30 Seconds</a>
+          <a href="#ref-classes" class="btn-secondary">Explore Language Reference</a>
+        </div>
+
+        <div class="features-grid">
+          <div class="card">
+            <div class="card-icon" style="background: rgba(56, 189, 248, 0.15); color: var(--accent-cyan);">⚡</div>
+            <h3>40x Faster Compilation</h3>
+            <p>Direct translation pipeline achieves sub-millisecond compile latency, making test cycles virtually instantaneous.</p>
+          </div>
+
+          <div class="card">
+            <div class="card-icon" style="background: rgba(52, 211, 153, 0.15); color: var(--accent-emerald);">🪶</div>
+            <h3>325 KB Binary Footprint</h3>
+            <p>Over 600x smaller than Clang or GCC. Clean, auditable C11 source with zero heavyweight runtime dependencies.</p>
+          </div>
+
+          <div class="card">
+            <div class="card-icon" style="background: rgba(192, 132, 252, 0.15); color: var(--accent-purple);">🎯</div>
+            <h3>Modern OOP & RAII</h3>
+            <p>Classes, member functions, constructors, destructors, dynamic memory, namespaces, and function overloading.</p>
+          </div>
+
+          <div class="card">
+            <div class="card-icon" style="background: rgba(251, 191, 36, 0.15); color: var(--accent-amber);">⚙️</div>
+            <h3>Native AMD64 ABI</h3>
+            <p>Generates standard System V x86_64 assembly compatible with GNU Assembler (<code>as</code>) and standard C/C++ runtimes.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section: Overview -->
+      <section class="doc-section" id="overview">
+        <div class="section-header">
+          <span class="section-tag">Introduction</span>
+          <h2>Overview & Highlights</h2>
+        </div>
+        <p>
+          Traditional C++ compilers such as Clang and GCC carry millions of lines of historical complexity and require hundreds of megabytes in shared libraries (<code>libLLVM</code>, <code>libclang-cpp</code>). While powerful, this makes compile times a bottleneck during rapid edit-compile-test cycles.
+        </p>
+        <p>
+          <strong>winds</strong> is built from the ground up for speed, simplicity, and debuggability:
+        </p>
+        <ul style="margin-left: 1.5rem; margin-bottom: 1.5rem; color: var(--text-secondary);">
+          <li style="margin-bottom: 0.5rem;"><strong>Arena-Based Memory Management:</strong> Allocations occur in contiguous 64KB memory blocks with bump-pointers, eliminating thousands of heap allocations and enabling instant O(1) process tear-down.</li>
+          <li style="margin-bottom: 0.5rem;"><strong>FNV-1a String Interning:</strong> Identifiers, method signatures, and symbol names are interned once, transforming string comparisons across compilation into fast pointer equality checks.</li>
+          <li style="margin-bottom: 0.5rem;"><strong>Unified 3-Address Code IR:</strong> Clean intermediate representation designed for constant folding, dead-code elimination, and direct register allocation.</li>
+          <li style="margin-bottom: 0.5rem;"><strong>Global Usability:</strong> Once installed via <code>make install</code>, <code>winds</code> is available in your shell just like <code>clang++</code> or <code>g++</code>.</li>
+        </ul>
+      </section>
+
+      <!-- Section: Benchmarks -->
+      <section class="doc-section" id="benchmarks">
+        <div class="section-header">
+          <span class="section-tag">Performance</span>
+          <h2>Benchmarks vs Clang</h2>
+        </div>
+        <p>
+          Measurements conducted on Linux x86_64 compiling identical object-oriented C++ code containing classes, constructor chaining, dynamic memory allocation, and method invocations:
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Performance Metric</th>
+                <th>Clang++ 22.1 (LLVM)</th>
+                <th>winds</th>
+                <th>Advantage</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Frontend + Codegen Latency (<code>-S</code>)</strong></td>
+                <td>12.02 ms</td>
+                <td class="tag-fast">0.29 ms</td>
+                <td class="tag-fast">~41x Faster</td>
+              </tr>
+              <tr>
+                <td><strong>Compiler Binary Footprint</strong></td>
+                <td>~196.0 MB (with LLVM)</td>
+                <td class="tag-light">325 KB</td>
+                <td class="tag-light">~600x Smaller</td>
+              </tr>
+              <tr>
+                <td><strong>Runtime Shared Dependencies</strong></td>
+                <td>Massive (<code>libLLVM</code>, <code>libc++</code>)</td>
+                <td><strong>Zero</strong> (glibc only)</td>
+                <td>100% Self-contained</td>
+              </tr>
+              <tr>
+                <td><strong>Memory Deallocation Overhead</strong></td>
+                <td>Heavy recursive reference cleanup</td>
+                <td><strong>Instant O(1)</strong> bump-arena tear-down</td>
+                <td>Negligible RAM pressure</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Section: Quick Start -->
+      <section class="doc-section" id="quickstart">
+        <div class="section-header">
+          <span class="section-tag">Setup</span>
+          <h2>Quick Start & Installation</h2>
+        </div>
+        <p>
+          Building <code>winds</code> requires only standard build tools (GCC or Clang to build the compiler itself, and standard GNU <code>as</code> / <code>ld</code>).
+        </p>
+
+        <div class="code-container">
+          <div class="code-header">
+            <span>Terminal (Bash)</span>
+            <button class="copy-btn">Copy</button>
+          </div>
+          <pre><code><span class="cmt"># 1. Clone the repository</span>
+git clone https://github.com/don2e4/winds.git
+cd winds
+
+<span class="cmt"># 2. Build the optimized compiler binary</span>
+make
+
+<span class="cmt"># 3. Install globally to ~/.local/bin (accessible anywhere in $PATH)</span>
+make install
+
+<span class="cmt"># Optional: Install system-wide to /usr/local/bin</span>
+<span class="cmt"># sudo make install PREFIX=/usr/local</span>
+
+<span class="cmt"># 4. Verify installation</span>
+winds --version</code></pre>
+        </div>
+
+        <h3 style="margin: 1.5rem 0 0.75rem;">Compiling Your First Program</h3>
+        <p>Create a sample C++ file named <span class="inline-code">hello.cpp</span>:</p>
+
+        <div class="code-container">
+          <div class="code-header">
+            <span>hello.cpp</span>
+            <button class="copy-btn">Copy</button>
+          </div>
+          <pre><code><span class="kw">class</span> <span class="type">Greeter</span> {
+<span class="kw">private</span>:
+    <span class="type">int</span> id;
+<span class="kw">public</span>:
+    <span class="fn">Greeter</span>(<span class="type">int</span> greeter_id) {
+        <span class="kw">this</span>->id = greeter_id;
+    }
+
+    <span class="type">int</span> <span class="fn">computeScore</span>(<span class="type">int</span> base) {
+        <span class="kw">return</span> <span class="kw">this</span>->id * base + <span class="num">42</span>;
+    }
+};
+
+<span class="type">int</span> <span class="fn">main</span>() {
+    <span class="type">Greeter</span> g(<span class="num">3</span>);
+    <span class="type">int</span> result = g.<span class="fn">computeScore</span>(<span class="num">10</span>);
+    <span class="kw">return</span> result; <span class="cmt">// Returns 72 (3 * 10 + 42)</span>
+}</code></pre>
+        </div>
+
+        <p>Compile and run directly anywhere without specifying relative directory paths:</p>
+        <div class="code-container">
+          <div class="code-header">
+            <span>Terminal</span>
+            <button class="copy-btn">Copy</button>
+          </div>
+          <pre><code><span class="cmt"># Compile directly with winds</span>
+winds hello.cpp -o hello
+
+<span class="cmt"># Execute</span>
+./hello
+echo $?
+<span class="cmt"># Output: 72</span></code></pre>
+        </div>
+      </section>
+
+      <!-- Section: Language Reference - Classes -->
+      <section class="doc-section" id="ref-classes">
+        <div class="section-header">
+          <span class="section-tag">Language Reference</span>
+          <h2>Classes, Structs & Member Functions</h2>
+        </div>
+        <p>
+          <code>winds</code> implements standard C++ classes and structs with explicit member alignment and layout calculation. Methods automatically receive an implicit <code>this</code> pointer as their first argument in accordance with the System V AMD64 ABI.
+        </p>
+
+        <div class="code-container">
+          <div class="code-header">
+            <span>classes_example.cpp</span>
+            <button class="copy-btn">Copy</button>
+          </div>
+          <pre><code><span class="kw">class</span> <span class="type">Rectangle</span> {
+<span class="kw">private</span>:
+    <span class="type">int</span> width;
+    <span class="type">int</span> height;
+
+<span class="kw">public</span>:
+    <span class="fn">Rectangle</span>(<span class="type">int</span> w, <span class="type">int</span> h) {
+        <span class="kw">this</span>->width = w;
+        <span class="kw">this</span>->height = h;
+    }
+
+    <span class="type">int</span> <span class="fn">getArea</span>() {
+        <span class="kw">return</span> <span class="kw">this</span>->width * <span class="kw">this</span>->height;
+    }
+
+    <span class="type">bool</span> <span class="fn">isSquare</span>() {
+        <span class="kw">return</span> <span class="kw">this</span>->width == <span class="kw">this</span>->height;
+    }
+};</code></pre>
+        </div>
+      </section>
+
+      <!-- Section: Language Reference - Ctors & RAII -->
+      <section class="doc-section" id="ref-ctors">
+        <div class="section-header">
+          <span class="section-tag">Language Reference</span>
+          <h2>Constructors, Destructors & RAII</h2>
+        </div>
+        <p>
+          Constructors are executed immediately upon declaration of stack or heap variables. When a stack-allocated object reaches the end of its enclosing scope block, the compiler automatically inserts a call to its destructor (<code>~ClassName()</code>).
+        </p>
+
+        <div class="code-container">
+          <div class="code-header">
+            <span>raii_example.cpp</span>
+            <button class="copy-btn">Copy</button>
+          </div>
+          <pre><code><span class="type">int</span> g_cleanup_count = <span class="num">0</span>;
+
+<span class="kw">class</span> <span class="type">ResourceGuard</span> {
+<span class="kw">public</span>:
+    <span class="fn">ResourceGuard</span>() {
+        <span class="cmt">// Resource acquisition logic</span>
+    }
+
+    ~<span class="fn">ResourceGuard</span>() {
+        <span class="cmt">// Automatically invoked on scope exit</span>
+        g_cleanup_count = g_cleanup_count + <span class="num">1</span>;
+    }
+};
+
+<span class="type">void</span> <span class="fn">scopedWork</span>() {
+    <span class="type">ResourceGuard</span> guard;
+    <span class="cmt">// ... work performed here ...</span>
+    <span class="cmt">// guard.~ResourceGuard() emitted automatically here</span>
+}</code></pre>
+        </div>
+      </section>
+
+      <!-- Section: Language Reference - Dynamic Memory -->
+      <section class="doc-section" id="ref-memory">
+        <div class="section-header">
+          <span class="section-tag">Language Reference</span>
+          <h2>Dynamic Memory (<code>new</code> & <code>delete</code>)</h2>
+        </div>
+        <p>
+          Dynamic allocation with <code>new</code> computes the target type's size, invokes the system heap allocator (<code>malloc</code>), and subsequently executes the class constructor on the allocated block. <code>delete</code> invokes the destructor before releasing the memory via <code>free</code>.
+        </p>
+
+        <div class="code-container">
+          <div class="code-header">
+            <span>memory_example.cpp</span>
+            <button class="copy-btn">Copy</button>
+          </div>
+          <pre><code><span class="kw">class</span> <span class="type">Node</span> {
+<span class="kw">public</span>:
+    <span class="type">int</span> value;
+    <span class="type">Node</span>* next;
+
+    <span class="fn">Node</span>(<span class="type">int</span> v) {
+        <span class="kw">this</span>->value = v;
+        <span class="kw">this</span>->next = <span class="num">0</span>;
+    }
+};
+
+<span class="type">void</span> <span class="fn">heapExample</span>() {
+    <span class="cmt">// Allocates sizeof(Node) and runs Node::Node(42)</span>
+    <span class="type">Node</span>* item = <span class="kw">new</span> <span class="type">Node</span>(<span class="num">42</span>);
+
+    <span class="type">int</span> val = item->value;
+
+    <span class="cmt">// Destructs and frees memory</span>
+    <span class="kw">delete</span> item;
+}</code></pre>
+        </div>
+      </section>
+
+      <!-- Section: Language Reference - Namespaces -->
+      <section class="doc-section" id="ref-namespaces">
+        <div class="section-header">
+          <span class="section-tag">Language Reference</span>
+          <h2>Namespaces & Scope Resolution (<code>::</code>)</h2>
+        </div>
+        <p>
+          Full support for nested namespaces, explicit scope resolution with <code>::</code>, and <code>using namespace</code> directives that import symbol sets into the current lexical scope.
+        </p>
+
+        <div class="code-container">
+          <div class="code-header">
+            <span>namespace_example.cpp</span>
+            <button class="copy-btn">Copy</button>
+          </div>
+          <pre><code><span class="kw">namespace</span> <span class="type">Graphics</span> {
+    <span class="kw">namespace</span> <span class="type">TwoD</span> {
+        <span class="kw">class</span> <span class="type">Point</span> {
+        <span class="kw">public</span>:
+            <span class="type">int</span> x;
+            <span class="type">int</span> y;
+            <span class="fn">Point</span>(<span class="type">int</span> px, <span class="type">int</span> py) {
+                <span class="kw">this</span>->x = px;
+                <span class="kw">this</span>->y = py;
+            }
+        };
+    }
+}
+
+<span class="type">int</span> <span class="fn">main</span>() {
+    <span class="cmt">// Fully qualified declaration and construction</span>
+    <span class="type">Graphics</span>::<span class="type">TwoD</span>::<span class="type">Point</span> pt(<span class="num">10</span>, <span class="num">20</span>);
+
+    <span class="kw">using namespace</span> <span class="type">Graphics</span>::<span class="type">TwoD</span>;
+    <span class="type">Point</span> pt2(<span class="num">5</span>, <span class="num">15</span>);
+    <span class="kw">return</span> pt.x + pt2.y; <span class="cmt">// 25</span>
+}</code></pre>
+        </div>
+      </section>
+
+      <!-- Section: Language Reference - Overloading -->
+      <section class="doc-section" id="ref-overload">
+        <div class="section-header">
+          <span class="section-tag">Language Reference</span>
+          <h2>Function Overloading & Name Mangling</h2>
+        </div>
+        <p>
+          Functions and class methods can share the same name with different parameter arity and types. The semantic analyzer generates unique assembly labels prefixed with <code>_W_</code> encoding namespace hierarchy and argument signatures.
+        </p>
+
+        <div class="code-container">
+          <div class="code-header">
+            <span>overload_example.cpp</span>
+            <button class="copy-btn">Copy</button>
+          </div>
+          <pre><code><span class="cmt">// Two distinct overloads</span>
+<span class="type">int</span> <span class="fn">multiply</span>(<span class="type">int</span> a, <span class="type">int</span> b) {
+    <span class="kw">return</span> a * b;
+}
+
+<span class="type">int</span> <span class="fn">multiply</span>(<span class="type">int</span> a, <span class="type">int</span> b, <span class="type">int</span> c) {
+    <span class="kw">return</span> a * b * c;
+}
+
+<span class="type">int</span> <span class="fn">main</span>() {
+    <span class="type">int</span> x = <span class="fn">multiply</span>(<span class="num">3</span>, <span class="num">4</span>);       <span class="cmt">// Dispatches to 2-parameter symbol</span>
+    <span class="type">int</span> y = <span class="fn">multiply</span>(<span class="num">3</span>, <span class="num">4</span>, <span class="num">5</span>);    <span class="cmt">// Dispatches to 3-parameter symbol</span>
+    <span class="kw">return</span> x + y;                 <span class="cmt">// 12 + 60 = 72</span>
+}</code></pre>
+        </div>
+      </section>
+
+      <!-- Section: Language Reference - References -->
+      <section class="doc-section" id="ref-refs">
+        <div class="section-header">
+          <span class="section-tag">Language Reference</span>
+          <h2>References & Pointers</h2>
+        </div>
+        <p>
+          Supports pass-by-reference (<code>T&amp;</code>) with automatic pointer dereferencing semantics, eliminating explicit address-of and dereference syntax at call sites.
+        </p>
+
+        <div class="code-container">
+          <div class="code-header">
+            <span>references_example.cpp</span>
+            <button class="copy-btn">Copy</button>
+          </div>
+          <pre><code><span class="cmt">// Classic reference-based swap</span>
+<span class="type">void</span> <span class="fn">swap</span>(<span class="type">int</span>&amp; a, <span class="type">int</span>&amp; b) {
+    <span class="type">int</span> temp = a;
+    a = b;
+    b = temp;
+}
+
+<span class="type">int</span> <span class="fn">main</span>() {
+    <span class="type">int</span> x = <span class="num">100</span>;
+    <span class="type">int</span> y = <span class="num">200</span>;
+    <span class="fn">swap</span>(x, y);
+    <span class="cmt">// Now x == 200, y == 100</span>
+    <span class="kw">return</span> x - y; <span class="cmt">// 100</span>
+}</code></pre>
+        </div>
+      </section>
+
+      <!-- Section: Language Reference - Control Flow -->
+      <section class="doc-section" id="ref-control">
+        <div class="section-header">
+          <span class="section-tag">Language Reference</span>
+          <h2>Control Flow & Operators</h2>
+        </div>
+        <p>
+          Supports <code>for</code> loops, <code>while</code> loops, conditionals (<code>if</code>, <code>else</code>), compound blocks, <code>break</code>, <code>continue</code>, and all standard arithmetic, logical, bitwise, and comparison operators.
+        </p>
+
+        <div class="code-container">
+          <div class="code-header">
+            <span>control_flow.cpp</span>
+            <button class="copy-btn">Copy</button>
+          </div>
+          <pre><code><span class="type">int</span> <span class="fn">sumEvens</span>(<span class="type">int</span> limit) {
+    <span class="type">int</span> total = <span class="num">0</span>;
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; limit; i = i + <span class="num">1</span>) {
+        <span class="kw">if</span> (i % <span class="num">2</span> != <span class="num">0</span>) {
+            <span class="kw">continue</span>;
+        }
+        total = total + i;
+    }
+    <span class="kw">return</span> total;
+}</code></pre>
+        </div>
+      </section>
+
+      <!-- Section: Compiler Options -->
+      <section class="doc-section" id="cli-options">
+        <div class="section-header">
+          <span class="section-tag">CLI Reference</span>
+          <h2>Compiler Options & Flags</h2>
+        </div>
+        <p>
+          <code>winds</code> accepts standard GCC/Clang compatible flags, making it a drop-in component in shell scripts and build automations.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Option Flag</th>
+                <th>Description</th>
+                <th>Default Behavior</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>-o &lt;file&gt;</code></td>
+                <td>Specify the output executable or object filename.</td>
+                <td><code>a.out</code> (or input base name with appropriate extension)</td>
+              </tr>
+              <tr>
+                <td><code>-S</code></td>
+                <td>Stop after compilation; emit human-readable GNU x86_64 assembly (<code>.s</code>).</td>
+                <td>Assembles and links into final executable</td>
+              </tr>
+              <tr>
+                <td><code>-c</code></td>
+                <td>Compile and assemble, but do not link; emits object file (<code>.o</code>).</td>
+                <td>Full link into executable</td>
+              </tr>
+              <tr>
+                <td><code>-O0</code></td>
+                <td>Disable optimization passes for direct, unoptimized IR translation.</td>
+                <td>—</td>
+              </tr>
+              <tr>
+                <td><code>-O1</code>, <code>-O2</code></td>
+                <td>Enable peephole constant folding, dead jump elimination, and dead store elimination.</td>
+                <td><code>-O1</code> is active by default</td>
+              </tr>
+              <tr>
+                <td><code>--emit-ast</code></td>
+                <td>Print indented Abstract Syntax Tree (AST) structure to stdout for debugging.</td>
+                <td>Disabled</td>
+              </tr>
+              <tr>
+                <td><code>--emit-ir</code></td>
+                <td>Dump Linear 3-Address Code (3AC) Intermediate Representation to stdout.</td>
+                <td>Disabled</td>
+              </tr>
+              <tr>
+                <td><code>-v</code>, <code>--verbose</code></td>
+                <td>Enable verbose pipeline tracing, showing command invocations and elapsed timings.</td>
+                <td>Quiet mode</td>
+              </tr>
+              <tr>
+                <td><code>-h</code>, <code>--help</code></td>
+                <td>Display help summary and command-line usage manual.</td>
+                <td>—</td>
+              </tr>
+              <tr>
+                <td><code>--version</code></td>
+                <td>Print version information and target architecture (<code>x86_64-linux-gnu</code>).</td>
+                <td>—</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Section: Architecture -->
+      <section class="doc-section" id="architecture">
+        <div class="section-header">
+          <span class="section-tag">Internals</span>
+          <h2>Compiler Architecture</h2>
+        </div>
+        <p>
+          The architecture follows a streamlined, highly decoupled pipeline designed for minimal memory indirection and high instruction-cache locality:
+        </p>
+
+        <div class="arch-diagram">
+          <div class="arch-steps">
+            <div class="arch-node">
+              <strong>Source (.cpp)</strong>
+              <span>UTF-8 Buffer</span>
+            </div>
+            <div class="arch-arrow">➔</div>
+            <div class="arch-node">
+              <strong>Lexer</strong>
+              <span>FNV-1a Interning</span>
+            </div>
+            <div class="arch-arrow">➔</div>
+            <div class="arch-node">
+              <strong>Parser</strong>
+              <span>Recursive Descent AST</span>
+            </div>
+            <div class="arch-arrow">➔</div>
+            <div class="arch-node">
+              <strong>Semantic Analyzer</strong>
+              <span>Type & Scope Resolver</span>
+            </div>
+            <div class="arch-arrow">➔</div>
+            <div class="arch-node">
+              <strong>IR Generator</strong>
+              <span>3-Address Code Module</span>
+            </div>
+            <div class="arch-arrow">➔</div>
+            <div class="arch-node">
+              <strong>Optimizer</strong>
+              <span>Const Fold & DCE</span>
+            </div>
+            <div class="arch-arrow">➔</div>
+            <div class="arch-node">
+              <strong>Codegen</strong>
+              <span>System V AMD64</span>
+            </div>
+            <div class="arch-arrow">➔</div>
+            <div class="arch-node">
+              <strong>Binary (.out)</strong>
+              <span>GAS & Linker</span>
+            </div>
+          </div>
+        </div>
+
+        <p>
+          Key architectural components located in <code>src/</code>:
+        </p>
+        <ul style="margin-left: 1.5rem; color: var(--text-secondary);">
+          <li style="margin-bottom: 0.4rem;"><code>src/arena.c</code>: Custom chunked bump allocator. Zero fragmentation, instantaneous free.</li>
+          <li style="margin-bottom: 0.4rem;"><code>src/str.c</code>: String interning table with 32-bit FNV-1a hashing.</li>
+          <li style="margin-bottom: 0.4rem;"><code>src/lexer.c</code>: Fast scanner supporting identifiers, numeric literals, operators, and comments.</li>
+          <li style="margin-bottom: 0.4rem;"><code>src/parser.c</code>: Operator-precedence parsing with unlimited token lookahead for complex declarations.</li>
+          <li style="margin-bottom: 0.4rem;"><code>src/sema.c</code>: Type hierarchy, class layout computation, method mangling, and overload resolution.</li>
+          <li style="margin-bottom: 0.4rem;"><code>src/ir.c</code> &amp; <code>src/opt.c</code>: 3AC intermediate representation generation and peephole passes.</li>
+          <li style="margin-bottom: 0.4rem;"><code>src/codegen_x86.c</code>: 16-byte stack frame alignment, System V ABI register mapping, and GAS syntax emission.</li>
+        </ul>
+      </section>
+
+      <!-- Section: Interactive IR Showcase -->
+      <section class="doc-section" id="showcase">
+        <div class="section-header">
+          <span class="section-tag">Deep Dive</span>
+          <h2>Interactive IR & Assembly Showcase</h2>
+        </div>
+        <p>
+          Compare how a C++ method is lowered from high-level source code, to winds 3-Address Code Intermediate Representation, to final optimized x86_64 assembly:
+        </p>
+
+        <div class="code-container">
+          <div class="code-header">
+            <div class="code-tabs">
+              <button class="code-tab active">C++ Source</button>
+              <button class="code-tab">Winds 3AC IR (--emit-ir)</button>
+              <button class="code-tab">x86_64 Assembly (-S)</button>
+            </div>
+            <button class="copy-btn">Copy</button>
+          </div>
+
+          <!-- Tab 1: C++ Source -->
+          <pre><code><span class="kw">class</span> <span class="type">Calculator</span> {
+<span class="kw">public</span>:
+    <span class="type">int</span> factor;
+
+    <span class="fn">Calculator</span>(<span class="type">int</span> f) {
+        <span class="kw">this</span>->factor = f;
+    }
+
+    <span class="type">int</span> <span class="fn">multiply</span>(<span class="type">int</span> x) {
+        <span class="kw">return</span> <span class="kw">this</span>->factor * x;
+    }
+};</code></pre>
+
+          <!-- Tab 2: 3AC IR -->
+          <pre style="display: none;"><code><span class="cmt">; Winds Linear 3AC Intermediate Representation</span>
+function _W_Calculator_multiply(this: ptr, x: i32) -> i32:
+    t0 = load.i32 [this + 0]       <span class="cmt">; load this->factor</span>
+    t1 = mul.i32 t0, x             <span class="cmt">; compute this->factor * x</span>
+    ret.i32 t1                     <span class="cmt">; return product</span>
+
+function _W_Calculator_ctor(this: ptr, f: i32) -> void:
+    store.i32 [this + 0], f        <span class="cmt">; this->factor = f</span>
+    ret.void</code></pre>
+
+          <!-- Tab 3: x86_64 Assembly -->
+          <pre style="display: none;"><code><span class="cmt"># GNU Assembler (GAS) System V AMD64</span>
+    .globl  _W_Calculator_multiply
+    .type   _W_Calculator_multiply, @function
+_W_Calculator_multiply:
+    pushq   %rbp
+    movq    %rsp, %rbp
+    movq    %rdi, -8(%rbp)        <span class="cmt"># %rdi = this pointer</span>
+    movl    %esi, -12(%rbp)       <span class="cmt"># %esi = x parameter</span>
+    movq    -8(%rbp), %rax
+    movl    0(%rax), %eax         <span class="cmt"># load factor</span>
+    imull   -12(%rbp), %eax       <span class="cmt"># factor * x</span>
+    movq    %rbp, %rsp
+    popq    %rbp
+    ret</code></pre>
+        </div>
+      </section>
+
+      <!-- Section: FAQ -->
+      <section class="doc-section" id="faq">
+        <div class="section-header">
+          <span class="section-tag">Questions</span>
+          <h2>Frequently Asked Questions</h2>
+        </div>
+        <p>Common questions regarding architecture, standard conformance, and deployment:</p>
+
+        <div class="faq-list">
+          <div class="faq-item">
+            <button class="faq-question">
+              <span>Why build a C++ compiler without LLVM?</span>
+              <span class="faq-toggle">+</span>
+            </button>
+            <div class="faq-answer">
+              LLVM is a magnificent engineering feat, but it introduces immense build times, huge binary footprints (typically 100MB+ per toolchain), and complex C++ API bindings. By generating high-quality x86_64 assembly directly through a clean 3-address code IR, <strong>winds</strong> achieves 0.29 ms compile latency and a 325 KB executable size while remaining completely self-contained.
+            </div>
+          </div>
+
+          <div class="faq-item">
+            <button class="faq-question">
+              <span>How does winds achieve 0.3 ms compile latency?</span>
+              <span class="faq-toggle">+</span>
+            </button>
+            <div class="faq-answer">
+              Sub-millisecond speed is the result of three foundational design choices:
+              <br>1. <strong>Block Bump Arena Allocation:</strong> Zero heap fragmentation and no fine-grained malloc/free overhead during AST and IR construction.
+              <br>2. <strong>String Interning:</strong> Token strings are converted to 64-bit pointers upon scanning, making semantic symbol lookups fast integer comparisons.
+              <br>3. <strong>Single-Pass Direct Lowering:</strong> The IR translates directly to System V AMD64 instructions without multi-megabyte intermediate graphs.
+            </div>
+          </div>
+
+          <div class="faq-item">
+            <button class="faq-question">
+              <span>Can I use standard C library functions with winds?</span>
+              <span class="faq-toggle">+</span>
+            </button>
+            <div class="faq-answer">
+              Yes! Because <code>winds</code> complies with the standard System V AMD64 calling convention (passing integer and pointer arguments in <code>%rdi</code>, <code>%rsi</code>, <code>%rdx</code>, <code>%rcx</code>, <code>%r8</code>, <code>%r9</code>), you can declare external functions such as <code>malloc</code>, <code>free</code>, <code>printf</code>, and <code>exit</code> and call them seamlessly.
+            </div>
+          </div>
+
+          <div class="faq-item">
+            <button class="faq-question">
+              <span>How does winds handle object destruction and RAII?</span>
+              <span class="faq-toggle">+</span>
+            </button>
+            <div class="faq-answer">
+              The semantic analyzer maintains a scoped symbol table. When a variable of class type with a destructor is instantiated on the stack, it is registered in the current scope frame. When the parser exits the compound statement or encounters a <code>return</code> statement, calls to all active destructors in that scope are emitted in reverse order of declaration before function epilogue emission.
+            </div>
+          </div>
+
+          <div class="faq-item">
+            <button class="faq-question">
+              <span>How are overloaded functions distinguished in object code?</span>
+              <span class="faq-toggle">+</span>
+            </button>
+            <div class="faq-answer">
+              <code>winds</code> employs a deterministic name mangling scheme. Symbols are prefixed with <code>_W_</code>, followed by their namespace path or class owner, member name, and a typed signature suffix (e.g. <code>_W_Math_add_2_i32_i32</code>). This avoids symbol collisions in object files and ensures full compatibility with the GNU Assembler and Linker.
+            </div>
+          </div>
+
+          <div class="faq-item">
+            <button class="faq-question">
+              <span>Which platforms and architectures are supported?</span>
+              <span class="faq-toggle">+</span>
+            </button>
+            <div class="faq-answer">
+              Currently, <code>winds</code> natively targets <strong>Linux x86_64</strong> (AMD64) using GNU Assembler (<code>as</code>) syntax and ELF ABI. Support for macOS (Mach-O) and ARM64 (AArch64) is on the development roadmap.
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Site Footer -->
+  <footer class="site-footer">
+    <p>
+      &copy; 2026 <strong>winds</strong> Compiler Project. Released under the <a href="https://github.com/don2e4/winds/blob/master/LICENSE" target="_blank">MIT License</a>.
+    </p>
+    <p style="margin-top: 0.5rem; font-size: 0.8rem;">
+      Crafted with precision in C11 &bull; Linux x86_64 Native &bull; <a href="https://github.com/don2e4/winds">GitHub Repository</a>
+    </p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
