@@ -1,36 +1,77 @@
 #include "codegen_x86.h"
+#include "regalloc.h"
 
 static const char *k_arg_regs_64[] = { "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
 
-static int get_vreg_offset(int vreg, int base_stack) {
-    /* vreg 1 is at -(base_stack + 8), vreg 2 is at -(base_stack + 16)... */
-    return -(base_stack + vreg * 8);
+static int get_operand_reg(RegAlloc *ra, IROperand op) {
+    if (ra && op.vreg > 0 && op.vreg <= ra->vreg_count) {
+        return ra->vreg_to_reg[op.vreg];
+    }
+    return PHYS_REG_NONE;
 }
 
-static void emit_operand_to_rax(FILE *out, IROperand op, int base_stack) {
+static int get_operand_offset(RegAlloc *ra, IROperand op, int base_stack) {
+    if (ra && op.vreg > 0 && op.vreg <= ra->vreg_count && ra->vreg_to_spill[op.vreg] != 0) {
+        return ra->vreg_to_spill[op.vreg];
+    }
+    return -(base_stack + op.vreg * 8);
+}
+
+static void emit_operand_to_reg(FILE *out, const char *target_reg, IROperand op, RegAlloc *ra, int base_stack) {
     if (op.vreg > 0) {
-        fprintf(out, "\tmovq\t%d(%%rbp), %%rax\n", get_vreg_offset(op.vreg, base_stack));
+        int pr = get_operand_reg(ra, op);
+        if (pr >= 0) {
+            const char *src_name = regalloc_reg_name_64((PhysReg)pr);
+            if (strcmp(target_reg, src_name) != 0) {
+                fprintf(out, "\tmovq\t%s, %s\n", src_name, target_reg);
+            }
+        } else {
+            int off = get_operand_offset(ra, op, base_stack);
+            fprintf(out, "\tmovq\t%d(%%rbp), %s\n", off, target_reg);
+        }
     } else {
-        fprintf(out, "\tmovq\t$%ld, %%rax\n", (long)op.imm);
+        fprintf(out, "\tmovq\t$%ld, %s\n", (long)op.imm, target_reg);
     }
 }
 
-static void emit_operand_to_rcx(FILE *out, IROperand op, int base_stack) {
-    if (op.vreg > 0) {
-        fprintf(out, "\tmovq\t%d(%%rbp), %%rcx\n", get_vreg_offset(op.vreg, base_stack));
-    } else {
-        fprintf(out, "\tmovq\t$%ld, %%rcx\n", (long)op.imm);
+static void emit_operand_to_rax(FILE *out, IROperand op, RegAlloc *ra, int base_stack) {
+    emit_operand_to_reg(out, "%rax", op, ra, base_stack);
+}
+
+static void emit_operand_to_rcx(FILE *out, IROperand op, RegAlloc *ra, int base_stack) {
+    emit_operand_to_reg(out, "%rcx", op, ra, base_stack);
+}
+
+static void emit_store_from_reg(FILE *out, const char *src_reg, IROperand dest, RegAlloc *ra, int base_stack) {
+    if (dest.vreg > 0) {
+        int pr = get_operand_reg(ra, dest);
+        if (pr >= 0) {
+            const char *dst_name = regalloc_reg_name_64((PhysReg)pr);
+            if (strcmp(dst_name, src_reg) != 0) {
+                fprintf(out, "\tmovq\t%s, %s\n", src_reg, dst_name);
+            }
+        } else {
+            int off = get_operand_offset(ra, dest, base_stack);
+            fprintf(out, "\tmovq\t%s, %d(%%rbp)\n", src_reg, off);
+        }
     }
 }
 
-static void emit_store_rax(FILE *out, IROperand dest, int base_stack) {
-    fprintf(out, "\tmovq\t%%rax, %d(%%rbp)\n", get_vreg_offset(dest.vreg, base_stack));
+static void emit_store_rax(FILE *out, IROperand dest, RegAlloc *ra, int base_stack) {
+    emit_store_from_reg(out, "%rax", dest, ra, base_stack);
 }
 
-static void codegen_function(IRFunction *fn, FILE *out) {
+static void emit_store_rcx(FILE *out, IROperand dest, RegAlloc *ra, int base_stack) {
+    emit_store_from_reg(out, "%rcx", dest, ra, base_stack);
+}
+
+static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
     int local_stack = (fn->stack_size + 15) & ~15;
-    int vreg_space = ((fn->vreg_count + 1) * 8 + 15) & ~15;
-    int total_stack = local_stack + vreg_space;
+
+    /* Run register allocation on function */
+    RegAlloc *ra = regalloc_run(fn, arena, local_stack);
+
+    int total_stack = ((local_stack + ra->callee_save_space + ra->spill_space) + 15) & ~15;
     if (total_stack < 32) total_stack = 32;
 
     const char *func_name = fn->mangled_name ? fn->mangled_name : fn->name;
@@ -47,6 +88,13 @@ static void codegen_function(IRFunction *fn, FILE *out) {
     fprintf(out, "\t.cfi_def_cfa_register 6\n");
     fprintf(out, "\tsubq\t$%d, %%rsp\n", total_stack);
 
+    /* Save used callee-saved registers into their reserved stack slots */
+    for (int r = PHYS_REG_RBX; r <= PHYS_REG_R15; r++) {
+        if (ra->used_regs[r]) {
+            fprintf(out, "\tmovq\t%s, %d(%%rbp)\n", regalloc_reg_name_64((PhysReg)r), ra->callee_save_offsets[r]);
+        }
+    }
+
     char epilogue_label[128];
     snprintf(epilogue_label, sizeof(epilogue_label), ".L_ret_%s", func_name);
 
@@ -56,25 +104,54 @@ static void codegen_function(IRFunction *fn, FILE *out) {
                 fprintf(out, "%s:\n", inst->dest.label);
                 break;
 
-            case IR_IMM:
-                fprintf(out, "\tmovq\t$%ld, %%rax\n", (long)inst->src1.imm);
-                emit_store_rax(out, inst->dest, local_stack);
+            case IR_IMM: {
+                int pr = get_operand_reg(ra, inst->dest);
+                if (pr >= 0) {
+                    fprintf(out, "\tmovq\t$%ld, %s\n", (long)inst->src1.imm, regalloc_reg_name_64((PhysReg)pr));
+                } else {
+                    fprintf(out, "\tmovq\t$%ld, %%rax\n", (long)inst->src1.imm);
+                    emit_store_rax(out, inst->dest, ra, local_stack);
+                }
                 break;
+            }
 
-            case IR_STR:
-                fprintf(out, "\tleaq\t%s(%%rip), %%rax\n", inst->src1.label);
-                emit_store_rax(out, inst->dest, local_stack);
+            case IR_STR: {
+                int pr = get_operand_reg(ra, inst->dest);
+                if (pr >= 0) {
+                    fprintf(out, "\tleaq\t%s(%%rip), %s\n", inst->src1.label, regalloc_reg_name_64((PhysReg)pr));
+                } else {
+                    fprintf(out, "\tleaq\t%s(%%rip), %%rax\n", inst->src1.label);
+                    emit_store_rax(out, inst->dest, ra, local_stack);
+                }
                 break;
+            }
 
-            case IR_MOV:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_store_rax(out, inst->dest, local_stack);
+            case IR_MOV: {
+                int pd = get_operand_reg(ra, inst->dest);
+                int ps = (inst->src1.vreg > 0) ? get_operand_reg(ra, inst->src1) : -1;
+                if (pd >= 0 && ps >= 0) {
+                    if (pd != ps) {
+                        fprintf(out, "\tmovq\t%s, %s\n", regalloc_reg_name_64((PhysReg)ps), regalloc_reg_name_64((PhysReg)pd));
+                    }
+                } else if (pd >= 0 && inst->src1.vreg == 0) {
+                    fprintf(out, "\tmovq\t$%ld, %s\n", (long)inst->src1.imm, regalloc_reg_name_64((PhysReg)pd));
+                } else {
+                    emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                    emit_store_rax(out, inst->dest, ra, local_stack);
+                }
                 break;
+            }
 
-            case IR_LOAD_STACK:
-                fprintf(out, "\tmovq\t%d(%%rbp), %%rax\n", inst->src1.offset);
-                emit_store_rax(out, inst->dest, local_stack);
+            case IR_LOAD_STACK: {
+                int pd = get_operand_reg(ra, inst->dest);
+                if (pd >= 0) {
+                    fprintf(out, "\tmovq\t%d(%%rbp), %s\n", inst->src1.offset, regalloc_reg_name_64((PhysReg)pd));
+                } else {
+                    fprintf(out, "\tmovq\t%d(%%rbp), %%rax\n", inst->src1.offset);
+                    emit_store_rax(out, inst->dest, ra, local_stack);
+                }
                 break;
+            }
 
             case IR_STORE_STACK:
                 if (inst->src1.vreg == -1) {
@@ -84,18 +161,29 @@ static void codegen_function(IRFunction *fn, FILE *out) {
                         fprintf(out, "\tmovq\t%s, %d(%%rbp)\n", k_arg_regs_64[arg_num], inst->dest.offset);
                     }
                 } else {
-                    emit_operand_to_rax(out, inst->src1, local_stack);
-                    fprintf(out, "\tmovq\t%%rax, %d(%%rbp)\n", inst->dest.offset);
+                    int ps = (inst->src1.vreg > 0) ? get_operand_reg(ra, inst->src1) : -1;
+                    if (ps >= 0) {
+                        fprintf(out, "\tmovq\t%s, %d(%%rbp)\n", regalloc_reg_name_64((PhysReg)ps), inst->dest.offset);
+                    } else {
+                        emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                        fprintf(out, "\tmovq\t%%rax, %d(%%rbp)\n", inst->dest.offset);
+                    }
                 }
                 break;
 
-            case IR_ADDR_STACK:
-                fprintf(out, "\tleaq\t%d(%%rbp), %%rax\n", inst->src1.offset);
-                emit_store_rax(out, inst->dest, local_stack);
+            case IR_ADDR_STACK: {
+                int pd = get_operand_reg(ra, inst->dest);
+                if (pd >= 0) {
+                    fprintf(out, "\tleaq\t%d(%%rbp), %s\n", inst->src1.offset, regalloc_reg_name_64((PhysReg)pd));
+                } else {
+                    fprintf(out, "\tleaq\t%d(%%rbp), %%rax\n", inst->src1.offset);
+                    emit_store_rax(out, inst->dest, ra, local_stack);
+                }
                 break;
+            }
 
             case IR_LOAD:
-                emit_operand_to_rax(out, inst->src1, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 if (inst->size == 1) {
                     fprintf(out, "\tmovsbq\t%d(%%rax), %%rcx\n", inst->src2.offset);
                 } else if (inst->size == 4) {
@@ -103,12 +191,12 @@ static void codegen_function(IRFunction *fn, FILE *out) {
                 } else {
                     fprintf(out, "\tmovq\t%d(%%rax), %%rcx\n", inst->src2.offset);
                 }
-                fprintf(out, "\tmovq\t%%rcx, %d(%%rbp)\n", get_vreg_offset(inst->dest.vreg, local_stack));
+                emit_store_rcx(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_STORE:
-                emit_operand_to_rcx(out, inst->src1, local_stack); /* val in rcx */
-                fprintf(out, "\tmovq\t%d(%%rbp), %%rax\n", get_vreg_offset(inst->dest.vreg, local_stack)); /* ptr in rax */
+                emit_operand_to_rcx(out, inst->src1, ra, local_stack); /* val in rcx */
+                emit_operand_to_rax(out, inst->dest, ra, local_stack); /* ptr in rax */
                 if (inst->size == 1) {
                     fprintf(out, "\tmovb\t%%cl, %d(%%rax)\n", inst->dest.offset);
                 } else if (inst->size == 4) {
@@ -119,76 +207,76 @@ static void codegen_function(IRFunction *fn, FILE *out) {
                 break;
 
             case IR_ADD:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\taddq\t%%rcx, %%rax\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_SUB:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\tsubq\t%%rcx, %%rax\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_MUL:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\timulq\t%%rcx, %%rax\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_DIV:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\tcqto\n");
                 fprintf(out, "\tidivq\t%%rcx\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_MOD:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\tcqto\n");
                 fprintf(out, "\tidivq\t%%rcx\n");
                 fprintf(out, "\tmovq\t%%rdx, %%rax\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_AND:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\tandq\t%%rcx, %%rax\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_OR:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\torq\t%%rcx, %%rax\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_XOR:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\txorq\t%%rcx, %%rax\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_SHL:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\tshlq\t%%cl, %%rax\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_SHR:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\tsarq\t%%cl, %%rax\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_CMP_EQ:
@@ -197,8 +285,8 @@ static void codegen_function(IRFunction *fn, FILE *out) {
             case IR_CMP_LE:
             case IR_CMP_GT:
             case IR_CMP_GE: {
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                emit_operand_to_rcx(out, inst->src2, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\tcmpq\t%%rcx, %%rax\n");
 
                 const char *set_cc = "sete";
@@ -213,7 +301,7 @@ static void codegen_function(IRFunction *fn, FILE *out) {
                 }
                 fprintf(out, "\t%s\t%%al\n", set_cc);
                 fprintf(out, "\tmovzbq\t%%al, %%rax\n");
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
             }
 
@@ -221,34 +309,45 @@ static void codegen_function(IRFunction *fn, FILE *out) {
                 fprintf(out, "\tjmp\t%s\n", inst->dest.label);
                 break;
 
-            case IR_JMP_IF_ZERO:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                fprintf(out, "\ttestq\t%%rax, %%rax\n");
+            case IR_JMP_IF_ZERO: {
+                int pr = get_operand_reg(ra, inst->src1);
+                if (pr >= 0) {
+                    fprintf(out, "\ttestq\t%s, %s\n", regalloc_reg_name_64((PhysReg)pr), regalloc_reg_name_64((PhysReg)pr));
+                } else {
+                    emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                    fprintf(out, "\ttestq\t%%rax, %%rax\n");
+                }
                 fprintf(out, "\tjz\t%s\n", inst->dest.label);
                 break;
+            }
 
-            case IR_JMP_IF_NOT_ZERO:
-                emit_operand_to_rax(out, inst->src1, local_stack);
-                fprintf(out, "\ttestq\t%%rax, %%rax\n");
+            case IR_JMP_IF_NOT_ZERO: {
+                int pr = get_operand_reg(ra, inst->src1);
+                if (pr >= 0) {
+                    fprintf(out, "\ttestq\t%s, %s\n", regalloc_reg_name_64((PhysReg)pr), regalloc_reg_name_64((PhysReg)pr));
+                } else {
+                    emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                    fprintf(out, "\ttestq\t%%rax, %%rax\n");
+                }
                 fprintf(out, "\tjnz\t%s\n", inst->dest.label);
                 break;
+            }
 
             case IR_CALL: {
                 /* System V ABI: first 6 integer/pointer args in rdi, rsi, rdx, rcx, r8, r9 */
                 for (int i = 0; i < inst->call_arg_count && i < 6; i++) {
-                    emit_operand_to_rax(out, inst->call_args[i], local_stack);
-                    fprintf(out, "\tmovq\t%%rax, %s\n", k_arg_regs_64[i]);
+                    emit_operand_to_reg(out, k_arg_regs_64[i], inst->call_args[i], ra, local_stack);
                 }
 
                 /* Clear %al for variadic function calls */
                 fprintf(out, "\txorl\t%%eax, %%eax\n");
                 fprintf(out, "\tcall\t%s@PLT\n", inst->src1.label);
-                emit_store_rax(out, inst->dest, local_stack);
+                emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
             }
 
             case IR_RET:
-                emit_operand_to_rax(out, inst->src1, local_stack);
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 fprintf(out, "\tjmp\t%s\n", epilogue_label);
                 break;
 
@@ -258,6 +357,12 @@ static void codegen_function(IRFunction *fn, FILE *out) {
     }
 
     fprintf(out, "%s:\n", epilogue_label);
+    /* Restore used callee-saved registers in reverse order */
+    for (int r = PHYS_REG_R15; r >= PHYS_REG_RBX; r--) {
+        if (ra->used_regs[r]) {
+            fprintf(out, "\tmovq\t%d(%%rbp), %s\n", ra->callee_save_offsets[r], regalloc_reg_name_64((PhysReg)r));
+        }
+    }
     fprintf(out, "\tmovq\t%%rbp, %%rsp\n");
     fprintf(out, "\tpopq\t%%rbp\n");
     fprintf(out, "\t.cfi_def_cfa 7, 8\n");
@@ -289,7 +394,6 @@ bool codegen_x86_emit(IRModule *mod, FILE *out) {
         }
     }
 
-    /* Emit functions in reverse order so declarations match module */
     /* Reverse function list for natural top-down ordering */
     IRFunction *prev = NULL;
     IRFunction *curr = mod->functions;
@@ -302,7 +406,7 @@ bool codegen_x86_emit(IRModule *mod, FILE *out) {
     mod->functions = prev;
 
     for (IRFunction *fn = mod->functions; fn != NULL; fn = fn->next) {
-        codegen_function(fn, out);
+        codegen_function(fn, out, mod->arena);
     }
 
     /* GNU stack note marking non-executable stack */

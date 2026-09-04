@@ -15,8 +15,8 @@
 
 | Metric | `clang++` (LLVM 22.1) | `winds` | Advantage |
 |---|:---:|:---:|:---:|
-| **Frontend + Codegen (`-S`)** | `12.02 ms` | **`0.32 ms`** | **~38x – 40x Faster** |
-| **Compiler Footprint** | `~196.0 MB` | **`325 KB`** | **~600x Lighter** |
+| **Frontend + Codegen (`-S`)** | `11.88 ms` | **`0.34 ms`** | **~35x Faster** |
+| **Compiler Footprint** | `~196.0 MB` | **`408 KB`** | **~492x Lighter** |
 | **Dependencies** | Massive LLVM libraries (`libLLVM`, `libclang-cpp`) | **Zero dependencies** (glibc only) | **100% Self-contained** |
 | **Memory Management** | Heavy reference counting & heap allocations | **High-speed Bump Arena** | **Instant O(1) Tear-down** |
 
@@ -24,6 +24,14 @@
 
 ---
 
+- **Linear Scan Register Allocation**:
+  - Direct allocation of AMD64 physical general-purpose registers (`%rbx`, `%r12`, `%r13`, `%r14`, `%r15`, `%r10`, `%r11`).
+  - Liveness analysis computing precise live intervals `[start, end]` per virtual register.
+  - Backward loop edge extension to prevent premature register reclamation across loops.
+  - Call boundary tracking: intervals that cross `IR_CALL` instructions are strictly mapped to callee-saved registers (`%rbx`, `%r12`..`%r15`) or spilled, safeguarding values across function calls.
+  - Dynamic stack spilling with dedicated frame slots when registers are exhausted.
+  - ABI isolation: System V calling convention argument registers (`%rdi`, `%rsi`, `%rdx`, `%rcx`, `%r8`, `%r9`) and return register (`%rax`) are kept isolated from allocatable registers.
+  - Callee-save register preservation: function prologue only saves callee-saved registers actively used; epilogue restores them in reverse order with 16-byte aligned stack frame.
 - **Preprocessor & Header Files**:
   - Full support for quoted headers (`#include "..."`) and system headers (`#include <...>`).
   - Search path configuration via `-I <dir>` flag with sensible defaults (`./include`, `/usr/include`).
@@ -86,23 +94,27 @@
                (Overload Resolution, Type Checking)
                                  │
                                  ▼
-                  Three-Address Code IR Module
-                                 │
-                                 ▼
-                       IR Optimization Passes
-            (Constant Folding, Dead Code Elimination)
-                                 │
-                                 ▼
-               System V AMD64 Native Code Generator
-                                 │
-                                 ▼
-                 GNU Assembler (GAS) Output (.s)
-                                 │
-                                 ▼
-                    System Assembler & Linker
-                                 │
-                                 ▼
-                    ELF Executable Binary (.out)
+                   Three-Address Code IR Module
+                                  │
+                                  ▼
+                        IR Optimization Passes
+             (Constant Folding, Dead Code Elimination)
+                                  │
+                                  ▼
+                   Linear Scan Register Allocator
+          (Liveness Analysis, Loop Extension, Callee-Saves)
+                                  │
+                                  ▼
+                System V AMD64 Native Code Generator
+                                  │
+                                  ▼
+                  GNU Assembler (GAS) Output (.s)
+                                  │
+                                  ▼
+                     System Assembler & Linker
+                                  │
+                                  ▼
+                     ELF Executable Binary (.out)
 ```
 
 1. **Arena Allocator (`src/arena.c`)**: Block-based bump-pointer allocator with 8-byte alignment ensuring high spatial cache locality and zero memory leaks.
@@ -112,8 +124,9 @@
 5. **Semantic Analyzer (`src/sema.c`)**: Scoped symbol tables, multi-namespace resolution, class member offset layouts, and function overloading.
 6. **IR Generator (`src/ir.c`)**: Linear 3-address code intermediate representation with typed instruction sizing.
 7. **Optimizer (`src/opt.c`)**: Multi-pass fixpoint pipeline running constant propagation & folding, copy propagation, algebraic simplification, unreachable block pruning, dead code elimination, and CFG jump threading.
-8. **x86_64 Codegen (`src/codegen_x86.c`)**: System V AMD64 ABI compliant register assignment (`%rdi`, `%rsi`, `%rdx`, `%rcx`, `%r8`, `%r9`), 16-byte aligned stack frame generation, and sized memory accesses (`movb`, `movl`, `movq`).
-9. **Driver (`src/driver.c`)**: Clean command-line interface orchestrating the toolchain pipeline.
+8. **Register Allocator (`src/regalloc.c`, `include/regalloc.h`)**: Linear scan physical register allocator tracking live intervals, backward loop edge extensions, callee-saved preservation across calls, and stack spilling.
+9. **x86_64 Codegen (`src/codegen_x86.c`)**: System V AMD64 ABI compliant code generator translating IR and allocated physical registers into machine assembly with 16-byte aligned stack frame management.
+10. **Driver (`src/driver.c`)**: Clean command-line interface orchestrating the toolchain pipeline.
 
 ---
 

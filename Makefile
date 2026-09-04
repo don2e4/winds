@@ -12,6 +12,7 @@ SRCS = src/arena.c \
        src/sema.c \
        src/ir.c \
        src/opt.c \
+       src/regalloc.c \
        src/codegen_x86.c \
        src/driver.c \
        src/main.c

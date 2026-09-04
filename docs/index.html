@@ -28,7 +28,7 @@
 
   <h2 id="overview">1. Overview</h2>
   <p>
-    winds is designed to offer fast compilation latencies and minimal resource consumption. Unlike modern LLVM or GCC distributions that require hundreds of megabytes in toolchain binaries and shared libraries, winds is a compact single executable (~325 KB) with sub-millisecond translation speed.
+    winds is designed to offer fast compilation latencies and minimal resource consumption. Unlike modern LLVM or GCC distributions that require hundreds of megabytes in toolchain binaries and shared libraries, winds is a compact single executable (~408 KB) with sub-millisecond translation speed.
   </p>
   <p>Key design characteristics:</p>
   <ul>
@@ -55,15 +55,15 @@
     <tbody>
       <tr>
         <td>Frontend + Codegen Latency (-S)</td>
-        <td>12.02 ms</td>
-        <td>0.29 ms</td>
-        <td>~41x faster</td>
+        <td>11.88 ms</td>
+        <td>0.34 ms</td>
+        <td>~35x faster</td>
       </tr>
       <tr>
         <td>Compiler Binary Size</td>
         <td>~196.0 MB (with LLVM)</td>
-        <td>325 KB</td>
-        <td>~600x smaller</td>
+        <td>408 KB</td>
+        <td>~492x smaller</td>
       </tr>
       <tr>
         <td>Shared Library Dependencies</td>
@@ -145,7 +145,7 @@ make</code></pre>
       </tr>
       <tr>
         <td><code>-O1</code>, <code>-O2</code></td>
-        <td>Enable constant propagation, copy propagation, algebraic simplification, unreachable block pruning, and CFG optimizations.</td>
+        <td>Enable constant propagation, copy propagation, algebraic simplification, unreachable block pruning, CFG optimizations, and linear scan register allocation.</td>
         <td>Enabled by default (-O1)</td>
       </tr>
       <tr>
@@ -353,7 +353,8 @@ int add(int a, int b) {
     <li><strong>Semantic Analysis (src/sema.c):</strong> Type checking, member offset layout calculation, symbol scoping, method name mangling, and fuzzy symbol typo suggestions.</li>
     <li><strong>IR Generation (src/ir.c):</strong> Translation of AST to linear 3-address code intermediate representation with explicit typed operations.</li>
     <li><strong>Optimization (src/opt.c):</strong> Multi-pass fixpoint pipeline running Constant Propagation, Copy Propagation, Algebraic Simplification, Unreachable Block Removal, Dead Code Elimination, and Basic CFG Jump Threading.</li>
-    <li><strong>Code Generation (src/codegen_x86.c):</strong> System V AMD64 assembly output generation with 16-byte aligned stack allocation.</li>
+    <li><strong>Register Allocation (src/regalloc.c):</strong> Linear scan physical register allocation over AMD64 general-purpose registers (%rbx, %r12-%r15, %r10-%r11), tracking live intervals with loop extension, callee-saved preservation across calls, and spill slot resolution.</li>
+    <li><strong>Code Generation (src/codegen_x86.c):</strong> System V AMD64 assembly output generation directly mapping allocated physical registers, preserving callee-saved registers, and maintaining 16-byte aligned stack frame allocation.</li>
   </ol>
 
   <h3>Intermediate Representation Example</h3>
@@ -391,7 +392,7 @@ _W_calc:
   <details>
     <summary>Why build a C++ compiler without LLVM?</summary>
     <p>
-      LLVM is large and complex. A basic LLVM toolchain easily exceeds 150 MB of disk space and adds significant startup and link overhead. winds demonstrates that a standalone, self-contained compiler written in standard C can compile C++ code in 0.3 ms with a 325 KB executable.
+      LLVM is large and complex. A basic LLVM toolchain easily exceeds 150 MB of disk space and adds significant startup and link overhead. winds demonstrates that a standalone, self-contained compiler written in standard C can compile C++ code in 0.3 ms with a 408 KB executable.
     </p>
   </details>
 
