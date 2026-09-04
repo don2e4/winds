@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>winds — C++ Compiler Documentation</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="bundle.css">
 </head>
 <body>
 
@@ -321,10 +322,13 @@ int main() {
   </ol>
 
   <h3>Intermediate Representation Example</h3>
-  <p>Given the C++ function:</p>
-  <pre><code>int calc(int a, int b) {
+  <p>The interactive component below lowerings C++ source into System V AMD64 assembly. Click the block to trigger a pixel-swap transition:</p>
+
+  <div id="pixel-swap-root">
+    <pre><code>int calc(int a, int b) {
     return a * b + 7;
 }</code></pre>
+  </div>
 
   <p>winds emits the following linear 3AC IR (visible via <code>--emit-ir</code>):</p>
   <pre><code>function _W_calc(a: i32, b: i32) -> i32:
@@ -400,5 +404,6 @@ _W_calc:
     <p>winds Compiler Project &bull; Released under the <a href="https://github.com/don2e4/winds/blob/master/LICENSE">MIT License</a> &bull; <a href="https://github.com/don2e4/winds">GitHub Repository</a></p>
   </footer>
 
+  <script src="bundle.js"></script>
 </body>
 </html>
