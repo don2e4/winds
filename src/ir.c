@@ -788,6 +788,14 @@ void ir_build_from_ast(IRModule *mod, ASTNode *program) {
     }
 }
 
+static void print_ir_operand(IROperand op) {
+    if (op.vreg > 0) {
+        printf("v%d", op.vreg);
+    } else {
+        printf("%ld", (long)op.imm);
+    }
+}
+
 void ir_dump(IRModule *mod) {
     printf("=== WINDS IR MODULE ===\n");
     for (IRFunction *fn = mod->functions; fn != NULL; fn = fn->next) {
@@ -804,7 +812,9 @@ void ir_dump(IRModule *mod) {
                     printf("  v%d = string(%s)\n", inst->dest.vreg, inst->src1.label);
                     break;
                 case IR_MOV:
-                    printf("  v%d = v%d\n", inst->dest.vreg, inst->src1.vreg);
+                    printf("  v%d = ", inst->dest.vreg);
+                    print_ir_operand(inst->src1);
+                    printf("\n");
                     break;
                 case IR_LOAD_STACK:
                     printf("  v%d = [rbp %d]\n", inst->dest.vreg, inst->src1.offset);
@@ -813,7 +823,9 @@ void ir_dump(IRModule *mod) {
                     if (inst->src1.vreg == -1) {
                         printf("  [rbp %d] = arg_%ld\n", inst->dest.offset, (long)inst->src1.imm);
                     } else {
-                        printf("  [rbp %d] = v%d\n", inst->dest.offset, inst->src1.vreg);
+                        printf("  [rbp %d] = ", inst->dest.offset);
+                        print_ir_operand(inst->src1);
+                        printf("\n");
                     }
                     break;
                 case IR_ADDR_STACK:
@@ -823,34 +835,73 @@ void ir_dump(IRModule *mod) {
                     printf("  v%d = [v%d + %d]\n", inst->dest.vreg, inst->src1.vreg, inst->src2.offset);
                     break;
                 case IR_STORE:
-                    printf("  [v%d + %d] = v%d\n", inst->dest.vreg, inst->dest.offset, inst->src1.vreg);
+                    printf("  [v%d + %d] = ", inst->dest.vreg, inst->dest.offset);
+                    print_ir_operand(inst->src1);
+                    printf("\n");
                     break;
                 case IR_ADD:
-                    printf("  v%d = v%d + v%d\n", inst->dest.vreg, inst->src1.vreg, inst->src2.vreg);
-                    break;
                 case IR_SUB:
-                    printf("  v%d = v%d - v%d\n", inst->dest.vreg, inst->src1.vreg, inst->src2.vreg);
-                    break;
                 case IR_MUL:
-                    printf("  v%d = v%d * v%d\n", inst->dest.vreg, inst->src1.vreg, inst->src2.vreg);
-                    break;
                 case IR_DIV:
-                    printf("  v%d = v%d / v%d\n", inst->dest.vreg, inst->src1.vreg, inst->src2.vreg);
-                    break;
+                case IR_MOD:
+                case IR_AND:
+                case IR_OR:
+                case IR_XOR:
+                case IR_SHL:
+                case IR_SHR:
                 case IR_CMP_EQ:
-                    printf("  v%d = (v%d == v%d)\n", inst->dest.vreg, inst->src1.vreg, inst->src2.vreg);
+                case IR_CMP_NE:
+                case IR_CMP_LT:
+                case IR_CMP_LE:
+                case IR_CMP_GT:
+                case IR_CMP_GE: {
+                    const char *op_sym = "+";
+                    switch (inst->op) {
+                        case IR_ADD: op_sym = "+"; break;
+                        case IR_SUB: op_sym = "-"; break;
+                        case IR_MUL: op_sym = "*"; break;
+                        case IR_DIV: op_sym = "/"; break;
+                        case IR_MOD: op_sym = "%"; break;
+                        case IR_AND: op_sym = "&"; break;
+                        case IR_OR:  op_sym = "|"; break;
+                        case IR_XOR: op_sym = "^"; break;
+                        case IR_SHL: op_sym = "<<"; break;
+                        case IR_SHR: op_sym = ">>"; break;
+                        case IR_CMP_EQ: op_sym = "=="; break;
+                        case IR_CMP_NE: op_sym = "!="; break;
+                        case IR_CMP_LT: op_sym = "<"; break;
+                        case IR_CMP_LE: op_sym = "<="; break;
+                        case IR_CMP_GT: op_sym = ">"; break;
+                        case IR_CMP_GE: op_sym = ">="; break;
+                        default: break;
+                    }
+                    printf("  v%d = ", inst->dest.vreg);
+                    print_ir_operand(inst->src1);
+                    printf(" %s ", op_sym);
+                    print_ir_operand(inst->src2);
+                    printf("\n");
                     break;
+                }
                 case IR_JMP:
                     printf("  jmp %s\n", inst->dest.label);
                     break;
                 case IR_JMP_IF_ZERO:
-                    printf("  jz v%d -> %s\n", inst->src1.vreg, inst->dest.label);
+                    printf("  jz ");
+                    print_ir_operand(inst->src1);
+                    printf(" -> %s\n", inst->dest.label);
+                    break;
+                case IR_JMP_IF_NOT_ZERO:
+                    printf("  jnz ");
+                    print_ir_operand(inst->src1);
+                    printf(" -> %s\n", inst->dest.label);
                     break;
                 case IR_CALL:
                     printf("  v%d = call %s (args: %d)\n", inst->dest.vreg, inst->src1.label, inst->call_arg_count);
                     break;
                 case IR_RET:
-                    printf("  ret v%d\n", inst->src1.vreg);
+                    printf("  ret ");
+                    print_ir_operand(inst->src1);
+                    printf("\n");
                     break;
                 default:
                     printf("  inst (%d)\n", inst->op);

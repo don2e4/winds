@@ -47,6 +47,17 @@ static Symbol *find_symbol(Scope *scope, const char *name) {
     return NULL;
 }
 
+static const char *find_closest_symbol(Sema *s, const char *name) {
+    const char *candidates[128];
+    int count = 0;
+    for (Scope *sc = s->current_scope; sc != NULL && count < 128; sc = sc->parent) {
+        for (Symbol *sym = sc->symbols; sym != NULL && count < 128; sym = sym->next) {
+            candidates[count++] = sym->name;
+        }
+    }
+    return diag_find_closest(name, candidates, count);
+}
+
 static Symbol *find_scoped_function_overload(Scope *scope, const char *scope_prefix, const char *name, int arg_count) {
     Symbol *fallback = NULL;
     char qbuf[256];
@@ -357,6 +368,10 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
             }
 
             diag_report(DIAG_ERROR, expr->loc, "use of undeclared identifier '%s'", expr->var_ref.name);
+            const char *suggestion = find_closest_symbol(s, expr->var_ref.name);
+            if (suggestion) {
+                diag_help("did you mean '%s'?", suggestion);
+            }
             expr->type = g_type_int;
             break;
         }
@@ -506,6 +521,15 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
             if (!f) {
                 diag_report(DIAG_ERROR, expr->loc, "class '%s' has no member named '%s'",
                             cls_type->name, expr->member.member_name);
+                const char *candidates[64];
+                int ccount = 0;
+                for (Field *curr = cls_type->cls.fields; curr != NULL && ccount < 64; curr = curr->next) {
+                    candidates[ccount++] = curr->name;
+                }
+                const char *sugg = diag_find_closest(expr->member.member_name, candidates, ccount);
+                if (sugg) {
+                    diag_help("did you mean member '%s'?", sugg);
+                }
                 expr->type = g_type_int;
             } else {
                 expr->member.field = f;

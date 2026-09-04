@@ -145,8 +145,13 @@ make</code></pre>
       </tr>
       <tr>
         <td><code>-O1</code>, <code>-O2</code></td>
-        <td>Enable constant folding, dead-code elimination, and jump cleanup.</td>
+        <td>Enable constant propagation, copy propagation, algebraic simplification, unreachable block pruning, and CFG optimizations.</td>
         <td>Enabled by default (-O1)</td>
+      </tr>
+      <tr>
+        <td><code>-I &lt;dir&gt;</code></td>
+        <td>Add directory to header include search path.</td>
+        <td>Searches ./include, /usr/include</td>
       </tr>
       <tr>
         <td><code>--emit-ast</code></td>
@@ -308,16 +313,46 @@ int main() {
     return sum;
 }</code></pre>
 
+  <h3>5.8 Headers &amp; Preprocessor Directives</h3>
+  <p>
+    winds includes a fast integrated preprocessor supporting file inclusion, multiple-inclusion guards, and conditional compilation:
+  </p>
+  <ul>
+    <li><code>#include "..."</code>: Searches the current file's directory, the current working directory, and configured include paths.</li>
+    <li><code>#include &lt;...&gt;</code>: Searches directory paths provided via <code>-I &lt;dir&gt;</code> and standard system include paths (<code>./include</code>, <code>/usr/include</code>).</li>
+    <li><code>#pragma once</code>: Automatic file-level inclusion deduplication.</li>
+    <li><code>#ifndef</code> / <code>#define</code> / <code>#endif</code>, <code>#ifdef</code>, <code>#else</code>: Standard conditional compilation guards.</li>
+  </ul>
+  <pre><code>#pragma once
+#ifndef MATH_UTILS_H
+#define MATH_UTILS_H
+
+int add(int a, int b) {
+    return a + b;
+}
+
+#endif</code></pre>
+
+  <h3>5.9 Understandable Error Diagnostics</h3>
+  <p>
+    Diagnostics in winds are designed to be immediate, helpful, and easier to understand than Clang or GCC:
+  </p>
+  <ul>
+    <li><strong>Rust / Elm style formatting:</strong> File location indicators (<code>--&gt; file:line:col</code>), clean line gutters (<code> | </code>), and exact tab-expanded column underlines (<code>^^^^</code>).</li>
+    <li><strong>Actionable hints:</strong> <code> = help:</code> notes providing direct remedies for missing semicolons, unbalanced braces, and unmatched delimiters.</li>
+    <li><strong>Fuzzy typo suggestions:</strong> Levenshtein distance matching automatically suggests closest matching identifier or class/struct member (e.g., <em>did you mean 'counter'?</em>).</li>
+  </ul>
+
   <h2 id="architecture">6. Architecture &amp; IR</h2>
   <p>
     The compiler executes in discrete sequential stages without cyclic dependencies:
   </p>
   <ol>
-    <li><strong>Lexical Analysis (src/lexer.c):</strong> Scans UTF-8 input, interned identifiers, numeric constants, and operators.</li>
-    <li><strong>Parsing (src/parser.c):</strong> Recursive descent parser with operator precedence expression evaluation producing an Abstract Syntax Tree.</li>
-    <li><strong>Semantic Analysis (src/sema.c):</strong> Type checking, member offset layout calculation, symbol scoping, and method name mangling.</li>
+    <li><strong>Lexical Analysis (src/lexer.c):</strong> Scans UTF-8 input, handles recursive `#include` file buffers, `#pragma once`, conditional directives, interned identifiers, and numeric constants.</li>
+    <li><strong>Parsing (src/parser.c):</strong> Recursive descent parser with operator precedence expression evaluation producing an Abstract Syntax Tree with helpful diagnostic recovery.</li>
+    <li><strong>Semantic Analysis (src/sema.c):</strong> Type checking, member offset layout calculation, symbol scoping, method name mangling, and fuzzy symbol typo suggestions.</li>
     <li><strong>IR Generation (src/ir.c):</strong> Translation of AST to linear 3-address code intermediate representation with explicit typed operations.</li>
-    <li><strong>Optimization (src/opt.c):</strong> Constant folding and redundant jump elimination passes.</li>
+    <li><strong>Optimization (src/opt.c):</strong> Multi-pass fixpoint pipeline running Constant Propagation, Copy Propagation, Algebraic Simplification, Unreachable Block Removal, Dead Code Elimination, and Basic CFG Jump Threading.</li>
     <li><strong>Code Generation (src/codegen_x86.c):</strong> System V AMD64 assembly output generation with 16-byte aligned stack allocation.</li>
   </ol>
 

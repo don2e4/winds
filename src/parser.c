@@ -31,8 +31,27 @@ static Token expect(Parser *p, TokenKind kind, const char *msg) {
         advance(p);
         return tok;
     }
-    diag_report(DIAG_ERROR, p->current.loc, "expected %s but got '%s'",
-                msg ? msg : token_kind_str(kind), token_kind_str(p->current.kind));
+    if (kind == TOK_SEMICOLON) {
+        if (msg) {
+            diag_report(DIAG_ERROR, p->current.loc, "expected %s, but found '%s'",
+                        msg, token_kind_str(p->current.kind));
+        } else {
+            diag_report(DIAG_ERROR, p->current.loc, "expected ';' after statement, but found '%s'",
+                        token_kind_str(p->current.kind));
+        }
+        diag_help("insert a semicolon ';' at the end of the statement");
+    } else if (kind == TOK_RPAREN) {
+        diag_report(DIAG_ERROR, p->current.loc, "expected ')' to close parentheses, but found '%s'",
+                    token_kind_str(p->current.kind));
+        diag_help("make sure opening and closing parentheses are balanced");
+    } else if (kind == TOK_RBRACE) {
+        diag_report(DIAG_ERROR, p->current.loc, "expected '}' to close block, but found '%s'",
+                    token_kind_str(p->current.kind));
+        diag_help("make sure opening and closing braces are balanced");
+    } else {
+        diag_report(DIAG_ERROR, p->current.loc, "expected %s, but found '%s'",
+                    msg ? msg : token_kind_str(kind), token_kind_str(p->current.kind));
+    }
     Token err = p->current;
     advance(p);
     return err;
@@ -43,9 +62,11 @@ void parser_init(Parser *p, Arena *arena, const char *source, const char *filena
     p->arena = arena;
     p->current_namespace = NULL;
     p->current_class = NULL;
-    /* Prime current and peek */
-    p->current = lexer_next(&p->lexer);
-    p->peek = lexer_next(&p->lexer);
+    p->primed = false;
+}
+
+void parser_add_include_path(Parser *p, const char *path) {
+    lexer_add_include_path(&p->lexer, path);
 }
 
 static bool is_type_specifier(Parser *p) {
@@ -964,6 +985,11 @@ static ASTNode *parse_declaration(Parser *p) {
 }
 
 ASTNode *parser_parse(Parser *p) {
+    if (!p->primed) {
+        p->current = lexer_next(&p->lexer);
+        p->peek = lexer_next(&p->lexer);
+        p->primed = true;
+    }
     SourceLoc loc = p->current.loc;
     ASTNode **decls = arena_alloc(p->arena, sizeof(ASTNode*) * 256);
     int count = 0;

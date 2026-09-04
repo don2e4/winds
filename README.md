@@ -24,8 +24,21 @@
 
 ---
 
-## 🛠️ Supported C++ Language Features
-
+- **Preprocessor & Header Files**:
+  - Full support for quoted headers (`#include "..."`) and system headers (`#include <...>`).
+  - Search path configuration via `-I <dir>` flag with sensible defaults (`./include`, `/usr/include`).
+  - `#pragma once` file-level single-inclusion guards.
+  - Conditional compilation directives: `#ifndef`, `#ifdef`, `#define`, `#else`, `#endif`.
+- **Friendly Visual Error Diagnostics**:
+  - Rust and Elm-inspired error reporting with clean line gutters (` | `) and exact column underlines (`^^^^`).
+  - Actionable ` = help:` hints suggesting missing semicolons, closing delimiters, and include paths.
+  - Levenshtein distance "did you mean?" typo suggestions for identifiers and struct/class members.
+- **Optimization Pipeline (-O1, -O2)**:
+  - **Constant Propagation & Folding**: Propagates known compile-time constants through arithmetic expressions and branches.
+  - **Copy Propagation**: Eliminates redundant register assignments and chains of copies.
+  - **Algebraic Simplification**: Automatically applies identity laws (`x + 0`, `x * 0`, `x * 1`, `x - x`, `x ^ x`, `x & 0`, `x == x`, etc.).
+  - **Unreachable Block Removal**: Computes basic block reachability and eliminates dead blocks after returns and unconditional jumps.
+  - **Basic CFG Optimization**: Eliminates dead jumps, simplifies constant conditional branches, and chains redundant jump labels.
 - **Object-Oriented Programming**:
   - `class` and `struct` declarations with proper member alignments and offsets.
   - Access specifiers: `public`, `private`, `protected`.
@@ -98,7 +111,7 @@
 4. **Parser (`src/parser.c`)**: Operator-precedence expression parsing and recursive descent declaration and statement parser with arbitrary lookahead support.
 5. **Semantic Analyzer (`src/sema.c`)**: Scoped symbol tables, multi-namespace resolution, class member offset layouts, and function overloading.
 6. **IR Generator (`src/ir.c`)**: Linear 3-address code intermediate representation with typed instruction sizing.
-7. **Optimizer (`src/opt.c`)**: Peephole constant folder and dead jump removal.
+7. **Optimizer (`src/opt.c`)**: Multi-pass fixpoint pipeline running constant propagation & folding, copy propagation, algebraic simplification, unreachable block pruning, dead code elimination, and CFG jump threading.
 8. **x86_64 Codegen (`src/codegen_x86.c`)**: System V AMD64 ABI compliant register assignment (`%rdi`, `%rsi`, `%rdx`, `%rcx`, `%r8`, `%r9`), 16-byte aligned stack frame generation, and sized memory accesses (`movb`, `movl`, `movq`).
 9. **Driver (`src/driver.c`)**: Clean command-line interface orchestrating the toolchain pipeline.
 
@@ -134,6 +147,9 @@ Runs the automated test suites verifying:
 - `03_classes.cpp` — Classes, access control, methods, implicit `this`.
 - `04_ctor_dtor.cpp` — Constructors, destructors, `new`, `delete`.
 - `05_namespace.cpp` — Namespaces, scope resolution (`::`), `using namespace`.
+- `06_headers.cpp` — `#include "..."`, `#include <...>`, `#pragma once`, `#ifndef` guards.
+- `07_optimizations.cpp` — Constant propagation, copy propagation, algebraic laws, CFG optimizations.
+- `08_diagnostics.sh` — Visual caret underlines, line gutters, typo "did you mean?" hints.
 
 ### Run Benchmark
 ```bash
@@ -155,6 +171,7 @@ Options:
   -S             Emit assembly source code only (.s)
   -c             Compile to object file (.o)
   -O0, -O1, -O2  Optimization level (default: -O1)
+  -I <dir>       Add directory to header search path
   --emit-ast     Dump Abstract Syntax Tree to stdout
   --emit-ir      Dump Three-Address Intermediate Representation
   -v             Verbose output (shows subprocess commands & timing)

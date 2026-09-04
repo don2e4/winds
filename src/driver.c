@@ -68,6 +68,9 @@ int driver_run(const DriverConfig *config) {
     /* 1. Parse */
     Parser parser;
     parser_init(&parser, arena, source, config->input_file);
+    for (int i = 0; i < config->include_path_count; i++) {
+        parser_add_include_path(&parser, config->include_paths[i]);
+    }
     ASTNode *ast = parser_parse(&parser);
 
     if (diag_error_count() > 0) {
@@ -107,6 +110,11 @@ int driver_run(const DriverConfig *config) {
         OptOptions opt_opts = {
             .level = config->opt_level,
             .enable_const_fold = true,
+            .enable_const_prop = true,
+            .enable_copy_prop = true,
+            .enable_algebraic = true,
+            .enable_cfg_opt = true,
+            .enable_unreachable = true,
             .enable_dce = true
         };
         opt_run_pipeline(ir_mod, opt_opts);

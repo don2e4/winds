@@ -12,6 +12,7 @@ static void print_help(const char *prog_name) {
     printf("  -O<level>      Optimization level (-O0, -O1, -O2) [default: -O1]\n");
     printf("  --emit-ast     Dump the parsed Abstract Syntax Tree\n");
     printf("  --emit-ir      Dump the 3-Address Code Intermediate Representation\n");
+    printf("  -I <dir>       Add directory to header include search path\n");
     printf("  -v, --verbose  Display compiler timing and build pipeline stages\n");
     printf("  -h, --help     Display this help information\n");
     printf("  --version      Display compiler version\n");
@@ -63,6 +64,19 @@ int main(int argc, char **argv) {
             } else {
                 fprintf(stderr, "winds: error: missing argument to '-o'\n");
                 return 1;
+            }
+        } else if (strncmp(arg, "-I", 2) == 0) {
+            const char *inc_path = NULL;
+            if (arg[2] != '\0') {
+                inc_path = arg + 2;
+            } else if (i + 1 < argc) {
+                inc_path = argv[++i];
+            } else {
+                fprintf(stderr, "winds: error: missing argument to '-I'\n");
+                return 1;
+            }
+            if (config.include_path_count < 64) {
+                config.include_paths[config.include_path_count++] = inc_path;
             }
         } else if (arg[0] == '-') {
             fprintf(stderr, "winds: error: unrecognized command-line option '%s'\n", arg);

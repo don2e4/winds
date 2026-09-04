@@ -23,6 +23,7 @@ typedef struct {
     const char *source_line; /* Pointer to start of line in source */
     int line;
     int col;
+    int length; /* Token length in characters for underline */
 } SourceLoc;
 
 /* Forward declarations */
@@ -45,6 +46,10 @@ typedef enum {
 /* Diagnostic state and functions */
 void diag_init(bool use_colors);
 void diag_report(DiagLevel level, SourceLoc loc, const char *fmt, ...);
+void diag_help(const char *fmt, ...);
+void diag_note(SourceLoc loc, const char *fmt, ...);
+int diag_levenshtein(const char *s1, const char *s2);
+const char *diag_find_closest(const char *target, const char **candidates, int count);
 int diag_error_count(void);
 int diag_warning_count(void);
 void diag_reset(void);

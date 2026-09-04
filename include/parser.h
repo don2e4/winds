@@ -10,6 +10,7 @@ typedef struct {
     Lexer lexer;
     Token current;
     Token peek;
+    bool primed;
     Arena *arena;
     const char *current_namespace;
     const char *current_class;
@@ -17,6 +18,9 @@ typedef struct {
 
 /* Initialize parser */
 void parser_init(Parser *p, Arena *arena, const char *source, const char *filename);
+
+/* Add include search path (-I) */
+void parser_add_include_path(Parser *p, const char *path);
 
 /* Parse an entire translation unit */
 ASTNode *parser_parse(Parser *p);

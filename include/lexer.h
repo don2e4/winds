@@ -107,6 +107,11 @@ struct Token {
     const char *str_val; /* Interned string for identifiers / string literals */
 };
 
+#define MAX_INCLUDE_DEPTH 64
+#define MAX_INCLUDE_PATHS 64
+#define MAX_PRAGMA_ONCE 256
+#define MAX_DEFINED_MACROS 512
+
 typedef struct {
     const char *source;
     const char *current;
@@ -114,10 +119,35 @@ typedef struct {
     const char *filename;
     int line;
     int col;
+    char *allocated_source; /* Dynamically allocated buffer if loaded via #include */
+} LexerBuffer;
+
+typedef struct Lexer {
+    LexerBuffer buffers[MAX_INCLUDE_DEPTH];
+    int depth;
+
+    /* Include paths from -I */
+    const char *include_paths[MAX_INCLUDE_PATHS];
+    int include_path_count;
+
+    /* Pragma once tracking */
+    const char *pragma_once_files[MAX_PRAGMA_ONCE];
+    int pragma_once_count;
+
+    /* Macro definitions for header guards */
+    const char *defined_macros[MAX_DEFINED_MACROS];
+    int defined_macro_count;
+
+    /* Conditional compilation */
+    int cond_depth;
+    int skip_depth;
 } Lexer;
 
 /* Initialize lexer with source string and filename */
 void lexer_init(Lexer *l, const char *source, const char *filename);
+
+/* Add an include search path (-I) */
+void lexer_add_include_path(Lexer *l, const char *path);
 
 /* Read the next token */
 Token lexer_next(Lexer *l);

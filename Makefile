@@ -52,6 +52,11 @@ test: $(TARGET)
 	@tests/04_ctor_dtor.out && echo "  [PASS] 04_ctor_dtor"
 	@$(TARGET) tests/05_namespace.cpp -o tests/05_namespace.out
 	@tests/05_namespace.out && echo "  [PASS] 05_namespace"
+	@$(TARGET) tests/06_headers.cpp -o tests/06_headers.out
+	@tests/06_headers.out && echo "  [PASS] 06_headers"
+	@$(TARGET) tests/07_optimizations.cpp -o tests/07_optimizations.out
+	@tests/07_optimizations.out && echo "  [PASS] 07_optimizations"
+	@tests/08_diagnostics.sh && echo "  [PASS] 08_diagnostics"
 	@echo "All tests passed successfully!"
 
 benchmark: $(TARGET)
