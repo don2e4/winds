@@ -13,8 +13,8 @@
 
 | Metric | `clang++` (LLVM 22.1) | `winds` | Advantage |
 |---|:---:|:---:|:---:|
-| **Frontend + Codegen (`-S`)** | `11.88 ms` | **`0.34 ms`** | **~35x Faster** |
-| **Compiler Footprint** | `~196.0 MB` | **`408 KB`** | **~492x Lighter** |
+| **Frontend + Codegen (`-S`)** | `11.76 ms` | **`0.33 ms`** | **~35x Faster** |
+| **Compiler Footprint** | `~196.0 MB` | **`431 KB`** | **~466x Lighter** |
 | **Dependencies** | Massive LLVM libraries (`libLLVM`, `libclang-cpp`) | **Zero dependencies** (glibc only) | **100% Self-contained** |
 | **Memory Management** | Heavy reference counting & heap allocations | **High-speed Bump Arena** | **Instant O(1) Tear-down** |
 
@@ -22,6 +22,18 @@
 
 ---
 
+- **Direct Script Execution Mode (`-run`)**:
+  - Run C++ files directly like scripts without intermediate files (`winds -run script.cpp [args...]`).
+  - Full support for Linux shebang scripting (`#!/usr/bin/env winds -run`), enabling standalone executable C++ scripts.
+  - Forwards exit codes and command-line arguments directly to the script's `main()`.
+- **Build System Dependency Generation (`-MMD -MP -MF`)**:
+  - Automatic Makefile dependency generation (`-MMD`, `-MD`) recording every included header file during compilation.
+  - Phony target generation (`-MP`) to avoid build breaks when headers are deleted or moved.
+  - Custom dependency file paths via `-MF <file>`. Full compatibility with GNU Make, CMake, and Ninja.
+- **Diagnostic Severity & Warning Controls**:
+  - `-Werror`: Treats all compiler warnings as hard errors for strict CI/CD pipelines.
+  - `-Wall`, `-Wextra`: Unused variable detection (`-Wunused-variable`) with actionable `_` prefix suggestions.
+  - `-fdiagnostics-color=always|never|auto`: Configurable colored diagnostic output.
 - **System V AMD64 ABI Compliance & Call Expansion**:
   - Full support for functions and methods with 7+ arguments (first 6 in `%rdi`, `%rsi`, `%rdx`, `%rcx`, `%r8`, `%r9`, and arguments 7+ stored in incoming stack slots `16(%rbp)`, `24(%rbp)`, etc.).
   - Caller stack argument allocation with strict 16-byte alignment (`subq $N, %rsp` / `addq $N, %rsp`), ensuring 100% crash-free compatibility with glibc SSE vector and variadic functions.
@@ -181,6 +193,8 @@ Automated test suites verifying compiler correctness:
 - `07_optimizations.cpp` — Constant propagation, copy propagation, algebraic laws, CFG optimizations.
 - `08_diagnostics.sh` — Visual caret underlines, line gutters, typo "did you mean?" hints.
 - `09_abi.cpp` — System V AMD64 ABI compliance: 7+ arguments, callee-saved preservation across recursion, 16-byte stack alignment.
+- `10_dependencies.sh` — `-MMD -MP -MF` Makefile dependency tracking and phony target generation.
+- `11_warnings_and_run.sh` — `-Wall` unused variable detection, `-Werror` escalation, and `-run` direct execution.
 
 ### Run Benchmark
 ```bash
@@ -195,12 +209,19 @@ Directly compares compilation throughput and binary footprint against system `cl
 Once installed, invoke `winds` directly anywhere from your terminal:
 
 ```bash
-winds [options] <input.cpp>
+winds [options] <input.cpp> [args...]
 
 Options:
   -o <file>                Place output into <file>
   -S                       Emit assembly source code only (.s)
   -c                       Compile to object file (.o)
+  -run                     Directly compile and execute input as a script
+  -MMD                     Generate Makefile dependency file (.d)
+  -MP                      Add phony targets for each dependency
+  -MF <file>               Specify output file for dependency generation
+  -Werror                  Treat all warnings as errors
+  -Wall, -Wextra           Enable compiler warnings (e.g. unused variables)
+  -fdiagnostics-color=..   Set colored diagnostics (always, never, auto)
   -O0, -O1, -O2            Optimization level (default: -O1)
   -I <dir>                 Add directory to header search path
   --target=<triple>        Specify target architecture triple (default: x86_64-linux-gnu)
@@ -220,6 +241,16 @@ Compile directly to binary:
 ```bash
 winds example.cpp -o example
 ./example
+```
+
+Direct script execution (no binary artifacts left on disk):
+```bash
+winds -run script.cpp arg1 arg2
+```
+
+Compile with automatic dependency tracking:
+```bash
+winds -MMD -MP -c module.cpp -o module.o
 ```
 
 Cross-compilation with custom sysroot and cross-prefix:

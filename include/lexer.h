@@ -138,9 +138,15 @@ typedef struct Lexer {
     const char *defined_macros[MAX_DEFINED_MACROS];
     int defined_macro_count;
 
+#define MAX_INCLUDED_FILES 256
+
     /* Conditional compilation */
     int cond_depth;
     int skip_depth;
+
+    /* Included files tracking for -MMD dependency generation */
+    const char *included_files[MAX_INCLUDED_FILES];
+    int included_file_count;
 } Lexer;
 
 /* Initialize lexer with source string and filename */
@@ -148,6 +154,9 @@ void lexer_init(Lexer *l, const char *source, const char *filename);
 
 /* Add an include search path (-I) */
 void lexer_add_include_path(Lexer *l, const char *path);
+
+/* Get all unique included header file paths */
+int lexer_get_included_files(Lexer *l, const char ***out_files);
 
 /* Read the next token */
 Token lexer_next(Lexer *l);

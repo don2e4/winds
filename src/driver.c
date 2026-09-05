@@ -58,6 +58,55 @@ static bool is_supported_x86_64(const char *triple) {
     return false;
 }
 
+static void emit_dependency_file(const DriverConfig *config, Lexer *lexer) {
+    if (!config->gen_dependencies || !config->input_file) return;
+
+    char dep_file[1024];
+    if (config->dep_output_file && config->dep_output_file[0] != '\0') {
+        snprintf(dep_file, sizeof(dep_file), "%s", config->dep_output_file);
+    } else if (config->output_file && config->output_file[0] != '\0') {
+        snprintf(dep_file, sizeof(dep_file), "%s", config->output_file);
+        char *dot = strrchr(dep_file, '.');
+        if (dot) {
+            strcpy(dot, ".d");
+        } else {
+            strncat(dep_file, ".d", sizeof(dep_file) - strlen(dep_file) - 1);
+        }
+    } else {
+        snprintf(dep_file, sizeof(dep_file), "%s", config->input_file);
+        char *dot = strrchr(dep_file, '.');
+        if (dot) {
+            strcpy(dot, ".d");
+        } else {
+            strncat(dep_file, ".d", sizeof(dep_file) - strlen(dep_file) - 1);
+        }
+    }
+
+    const char *target = config->output_file ? config->output_file : "a.out";
+
+    FILE *df = fopen(dep_file, "w");
+    if (!df) {
+        fprintf(stderr, "winds: error: failed to create dependency file '%s'\n", dep_file);
+        return;
+    }
+
+    fprintf(df, "%s: %s", target, config->input_file);
+    const char **inc_files = NULL;
+    int inc_count = lexer_get_included_files(lexer, &inc_files);
+    for (int i = 0; i < inc_count; i++) {
+        fprintf(df, " \\\n  %s", inc_files[i]);
+    }
+    fprintf(df, "\n");
+
+    if (config->phony_targets) {
+        for (int i = 0; i < inc_count; i++) {
+            fprintf(df, "\n%s:\n", inc_files[i]);
+        }
+    }
+
+    fclose(df);
+}
+
 int driver_run(const DriverConfig *config) {
     if (!config->input_file) {
         fprintf(stderr, "winds: error: no input file specified\n");
@@ -79,6 +128,12 @@ int driver_run(const DriverConfig *config) {
     Arena *arena = arena_create(128 * 1024);
     str_intern_init();
     diag_init(true);
+    if (config->warnings_as_errors) {
+        diag_set_warnings_as_errors(true);
+    }
+    if (config->color_diagnostics) {
+        diag_set_color_mode(config->color_diagnostics);
+    }
     type_system_init(arena);
 
     /* 1. Parse */
@@ -134,7 +189,8 @@ int driver_run(const DriverConfig *config) {
     /* 2. Semantic Analysis */
     Sema sema;
     sema_init(&sema, arena);
-    if (!sema_analyze(&sema, ast)) {
+    sema.warn_unused = config->warn_all || config->warn_extra || config->warnings_as_errors;
+    if (!sema_analyze(&sema, ast) || diag_error_count() > 0) {
         fprintf(stderr, "winds: compilation stopped with %d errors during semantic analysis\n", diag_error_count());
         free(source);
         arena_destroy(arena);
@@ -203,6 +259,7 @@ int driver_run(const DriverConfig *config) {
     }
 
     if (config->emit_assembly) {
+        emit_dependency_file(config, &parser.lexer);
         /* Done emitting assembly (-S) */
         free(source);
         arena_destroy(arena);
@@ -245,6 +302,8 @@ int driver_run(const DriverConfig *config) {
         int ret = system(cmd);
         if (ret != 0) {
             fprintf(stderr, "winds: error: assembler failed with exit code %d\n", ret);
+        } else {
+            emit_dependency_file(config, &parser.lexer);
         }
         if (is_temp_asm) unlink(asm_file);
         free(source);
@@ -253,8 +312,19 @@ int driver_run(const DriverConfig *config) {
         return ret;
     }
 
-    /* Full executable link via gcc driver */
-    const char *out_binary = config->output_file ? config->output_file : "a.out";
+    /* Full executable link or direct run via gcc driver */
+    char tmp_run_bin[256];
+    bool is_temp_run_bin = false;
+    const char *out_binary = NULL;
+
+    if (config->run_mode) {
+        snprintf(tmp_run_bin, sizeof(tmp_run_bin), "/tmp/winds_run_%d", getpid());
+        out_binary = tmp_run_bin;
+        is_temp_run_bin = true;
+    } else {
+        out_binary = config->output_file ? config->output_file : "a.out";
+    }
+
     char cmd[1024];
     if (config->sysroot && config->sysroot[0] != '\0') {
         snprintf(cmd, sizeof(cmd), "%s %s -o %s --sysroot=%s -no-pie -lm",
@@ -269,10 +339,35 @@ int driver_run(const DriverConfig *config) {
     int ret = system(cmd);
     if (ret != 0) {
         fprintf(stderr, "winds: error: linker failed with exit code %d\n", ret);
+        if (is_temp_asm) unlink(asm_file);
+        if (is_temp_run_bin) unlink(tmp_run_bin);
+        free(source);
+        arena_destroy(arena);
+        str_intern_destroy();
+        return ret;
     }
 
     if (is_temp_asm) {
         unlink(asm_file);
+    }
+
+    emit_dependency_file(config, &parser.lexer);
+
+    if (config->run_mode) {
+        char run_cmd[2048];
+        int written = snprintf(run_cmd, sizeof(run_cmd), "%s", out_binary);
+        for (int i = 0; i < config->run_argc && written < (int)sizeof(run_cmd) - 2; i++) {
+            written += snprintf(run_cmd + written, sizeof(run_cmd) - written, " %s", config->run_argv[i]);
+        }
+        if (config->verbose) {
+            printf("winds: executing script: %s\n", run_cmd);
+        }
+        int script_ret = system(run_cmd);
+        unlink(tmp_run_bin);
+        if (script_ret != 0 && (script_ret >> 8) != 0) {
+            script_ret = (script_ret >> 8);
+        }
+        ret = script_ret;
     }
 
     double t_total = get_time_ms();

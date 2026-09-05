@@ -45,6 +45,8 @@ typedef enum {
 
 /* Diagnostic state and functions */
 void diag_init(bool use_colors);
+void diag_set_warnings_as_errors(bool enable);
+void diag_set_color_mode(const char *mode);
 void diag_report(DiagLevel level, SourceLoc loc, const char *fmt, ...);
 void diag_help(const char *fmt, ...);
 void diag_note(SourceLoc loc, const char *fmt, ...);

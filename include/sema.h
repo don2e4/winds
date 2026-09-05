@@ -22,6 +22,7 @@ struct Symbol {
     bool is_global;
     bool is_param;
     bool is_ref;      /* Reference variable (implicitly dereferenced) */
+    bool is_used;     /* Variable was referenced in an expression */
     ASTNode *ast_decl;
     struct Symbol *next;
 };
@@ -51,6 +52,7 @@ typedef struct {
     Type *current_func_ret;
     Type *current_class;
     int current_stack_offset;
+    bool warn_unused;
 } Sema;
 
 void sema_init(Sema *s, Arena *arena);

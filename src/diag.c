@@ -4,6 +4,7 @@
 static int g_errors = 0;
 static int g_warnings = 0;
 static bool g_use_colors = true;
+static bool g_warnings_as_errors = false;
 
 #define COLOR_RESET   "\033[0m"
 #define COLOR_BOLD    "\033[1m"
@@ -17,7 +18,23 @@ static bool g_use_colors = true;
 void diag_init(bool use_colors) {
     g_errors = 0;
     g_warnings = 0;
+    g_warnings_as_errors = false;
     g_use_colors = use_colors && isatty(fileno(stderr));
+}
+
+void diag_set_warnings_as_errors(bool enable) {
+    g_warnings_as_errors = enable;
+}
+
+void diag_set_color_mode(const char *mode) {
+    if (!mode) return;
+    if (strcmp(mode, "always") == 0 || strcmp(mode, "1") == 0) {
+        g_use_colors = true;
+    } else if (strcmp(mode, "never") == 0 || strcmp(mode, "0") == 0) {
+        g_use_colors = false;
+    } else {
+        g_use_colors = isatty(fileno(stderr));
+    }
 }
 
 int diag_error_count(void) {
@@ -101,9 +118,15 @@ void diag_report(DiagLevel level, SourceLoc loc, const char *fmt, ...) {
             color = COLOR_CYAN;
             break;
         case DIAG_WARNING:
-            prefix_str = "warning";
-            color = COLOR_YELLOW;
-            g_warnings++;
+            if (g_warnings_as_errors) {
+                prefix_str = "error";
+                color = COLOR_RED;
+                g_errors++;
+            } else {
+                prefix_str = "warning";
+                color = COLOR_YELLOW;
+                g_warnings++;
+            }
             break;
         case DIAG_ERROR:
             prefix_str = "error";

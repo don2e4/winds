@@ -39,7 +39,7 @@ $(BIN_DIR) $(BUILD_DIR):
 	mkdir -p $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(BIN_DIR) tests/*.out tests/*.s tests/*.o
+	rm -rf $(BUILD_DIR) $(BIN_DIR) tests/*.out tests/*.s tests/*.o tests/*.d
 
 test: $(TARGET)
 	@echo "Running winds compiler test suite..."
@@ -60,6 +60,8 @@ test: $(TARGET)
 	@tests/08_diagnostics.sh && echo "  [PASS] 08_diagnostics"
 	@$(TARGET) tests/09_abi.cpp -o tests/09_abi.out
 	@tests/09_abi.out >/dev/null && echo "  [PASS] 09_abi"
+	@tests/10_dependencies.sh && echo "  [PASS] 10_dependencies"
+	@tests/11_warnings_and_run.sh && echo "  [PASS] 11_warnings_and_run"
 	@echo "All tests passed successfully!"
 
 benchmark: $(TARGET)

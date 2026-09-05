@@ -64,4 +64,16 @@ if(BUILD_TESTING)
         COMMAND ${BASH_EXECUTABLE} -c "WINDS=$<TARGET_FILE:winds> bash tests/08_diagnostics.sh"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
+
+    add_test(
+        NAME test_10_dependencies
+        COMMAND ${BASH_EXECUTABLE} -c "WINDS=$<TARGET_FILE:winds> bash tests/10_dependencies.sh"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
+    add_test(
+        NAME test_11_warnings_and_run
+        COMMAND ${BASH_EXECUTABLE} -c "WINDS=$<TARGET_FILE:winds> bash tests/11_warnings_and_run.sh"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
 endif()

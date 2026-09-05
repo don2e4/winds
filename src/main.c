@@ -16,7 +16,13 @@ static void print_help(const char *prog_name) {
     printf("  --target=<triple>        Specify target architecture triple (default: x86_64-linux-gnu)\n");
     printf("  --sysroot=<path>         Specify system root directory for headers and libraries\n");
     printf("  --cross-prefix=<prefix>  Specify cross-toolchain prefix (e.g. x86_64-linux-gnu-)\n");
-    printf("  --print-target-triple    Print target architecture triple and exit\n");
+    printf("  -run                     Directly compile and execute input as a script\n");
+    printf("  -MMD                     Generate dependency output file (.d)\n");
+    printf("  -MP                      Add phony targets for each dependency\n");
+    printf("  -MF <file>               Specify output file for dependency generation\n");
+    printf("  -Werror                  Treat all warnings as errors\n");
+    printf("  -Wall, -Wextra           Enable compiler warnings\n");
+    printf("  -fdiagnostics-color[=..] Set colored diagnostics (always, never, auto)\n");
     printf("  -v, --verbose            Display compiler timing and build pipeline stages\n");
     printf("  -h, --help               Display this help information\n");
     printf("  --version                Display compiler version\n");
@@ -77,6 +83,35 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "winds: error: missing argument to '--cross-prefix'\n");
                 return 1;
             }
+        } else if (strcmp(arg, "-run") == 0 || strcmp(arg, "--run") == 0) {
+            config.run_mode = true;
+        } else if (strcmp(arg, "-MMD") == 0 || strcmp(arg, "-MD") == 0) {
+            config.gen_dependencies = true;
+        } else if (strcmp(arg, "-MP") == 0) {
+            config.phony_targets = true;
+        } else if (strncmp(arg, "-MF=", 4) == 0) {
+            config.dep_output_file = arg + 4;
+        } else if (strcmp(arg, "-MF") == 0) {
+            if (i + 1 < argc) {
+                config.dep_output_file = argv[++i];
+            } else {
+                fprintf(stderr, "winds: error: missing argument to '-MF'\n");
+                return 1;
+            }
+        } else if (strcmp(arg, "-Werror") == 0) {
+            config.warnings_as_errors = true;
+        } else if (strcmp(arg, "-Wall") == 0) {
+            config.warn_all = true;
+        } else if (strcmp(arg, "-Wextra") == 0) {
+            config.warn_extra = true;
+        } else if (strncmp(arg, "-Wno-", 5) == 0 || strncmp(arg, "-W", 2) == 0) {
+            /* Accept standard warning flags gracefully */
+        } else if (strncmp(arg, "-fdiagnostics-color=", 20) == 0) {
+            config.color_diagnostics = arg + 20;
+        } else if (strcmp(arg, "-fdiagnostics-color") == 0) {
+            config.color_diagnostics = "always";
+        } else if (strcmp(arg, "-fno-diagnostics-color") == 0) {
+            config.color_diagnostics = "never";
         } else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
             config.verbose = true;
         } else if (strcmp(arg, "-S") == 0) {
@@ -117,11 +152,18 @@ int main(int argc, char **argv) {
             fprintf(stderr, "winds: error: unrecognized command-line option '%s'\n", arg);
             return 1;
         } else {
-            if (config.input_file) {
+            if (!config.input_file) {
+                config.input_file = arg;
+                if (config.run_mode) {
+                    /* All remaining CLI tokens are forwarded to the script */
+                    config.run_argc = argc - (i + 1);
+                    config.run_argv = &argv[i + 1];
+                    break;
+                }
+            } else {
                 fprintf(stderr, "winds: error: multiple input files are not supported in single invocation\n");
                 return 1;
             }
-            config.input_file = arg;
         }
     }
 

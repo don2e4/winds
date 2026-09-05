@@ -5,11 +5,25 @@
 void lexer_init(Lexer *l, const char *source, const char *filename) {
     memset(l, 0, sizeof(Lexer));
     l->depth = 0;
+    const char *curr = source;
+    const char *lstart = source;
+    int line = 1;
+
+    /* Skip shebang (#!) line if present on line 1 (e.g. for -run scripts) */
+    if (source && source[0] == '#' && source[1] == '!') {
+        const char *p = source + 2;
+        while (*p && *p != '\n') p++;
+        if (*p == '\n') p++;
+        curr = p;
+        lstart = p;
+        line = 2;
+    }
+
     l->buffers[0].source = source;
-    l->buffers[0].current = source;
-    l->buffers[0].line_start = source;
+    l->buffers[0].current = curr;
+    l->buffers[0].line_start = lstart;
     l->buffers[0].filename = filename ? filename : "<stdin>";
-    l->buffers[0].line = 1;
+    l->buffers[0].line = line;
     l->buffers[0].col = 1;
     l->buffers[0].allocated_source = NULL;
 }
@@ -17,6 +31,11 @@ void lexer_init(Lexer *l, const char *source, const char *filename) {
 void lexer_add_include_path(Lexer *l, const char *path) {
     if (!path || l->include_path_count >= MAX_INCLUDE_PATHS) return;
     l->include_paths[l->include_path_count++] = path;
+}
+
+int lexer_get_included_files(Lexer *l, const char ***out_files) {
+    if (out_files) *out_files = l->included_files;
+    return l->included_file_count;
 }
 
 static SourceLoc current_loc(Lexer *l) {
@@ -234,6 +253,18 @@ static void handle_preprocessor(Lexer *l) {
                 if (realpath(resolved_path, canonical) == NULL) {
                     strncpy(canonical, resolved_path, sizeof(canonical) - 1);
                     canonical[sizeof(canonical) - 1] = '\0';
+                }
+
+                /* Record included file for dependency tracking (-MMD) */
+                bool already_tracked = false;
+                for (int k = 0; k < l->included_file_count; k++) {
+                    if (strcmp(l->included_files[k], canonical) == 0) {
+                        already_tracked = true;
+                        break;
+                    }
+                }
+                if (!already_tracked && l->included_file_count < MAX_INCLUDED_FILES) {
+                    l->included_files[l->included_file_count++] = str_intern(canonical);
                 }
 
                 bool already_included = false;

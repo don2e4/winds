@@ -19,6 +19,22 @@ typedef struct {
     const char *target_triple; /* --target=<triple> */
     const char *sysroot;       /* --sysroot=<path> */
     const char *cross_prefix;  /* --cross-prefix=<prefix> */
+
+    /* Dependency generation options */
+    bool gen_dependencies;       /* -MMD, -MD */
+    bool phony_targets;          /* -MP */
+    const char *dep_output_file; /* -MF <file> */
+
+    /* Warning & diagnostic controls */
+    bool warnings_as_errors;     /* -Werror */
+    bool warn_all;               /* -Wall */
+    bool warn_extra;             /* -Wextra */
+    const char *color_diagnostics; /* -fdiagnostics-color=... */
+
+    /* Script execution mode */
+    bool run_mode;               /* -run */
+    int run_argc;
+    char **run_argv;
 } DriverConfig;
 
 int driver_run(const DriverConfig *config);

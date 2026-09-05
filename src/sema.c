@@ -14,6 +14,16 @@ static Scope *scope_push(Sema *s, ScopeKind kind, const char *name) {
 
 static void scope_pop(Sema *s) {
     if (s->current_scope && s->current_scope->parent) {
+        if (s->warn_unused) {
+            for (Symbol *sym = s->current_scope->symbols; sym != NULL; sym = sym->next) {
+                if (sym->kind == SYM_VAR && !sym->is_used && !sym->is_param && !sym->is_global) {
+                    if (sym->name && sym->name[0] != '_') {
+                        diag_report(DIAG_WARNING, sym->loc, "unused variable '%s'", sym->name);
+                        diag_help("if this is intentional, prefix the name with an underscore '_'");
+                    }
+                }
+            }
+        }
         s->current_scope = s->current_scope->parent;
     }
 }
@@ -341,6 +351,7 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
                 sym = find_symbol(s->current_scope, expr->var_ref.name);
             }
             if (sym) {
+                sym->is_used = true;
                 expr->var_ref.sym = sym;
                 expr->type = sym->type;
                 break;
