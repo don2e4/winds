@@ -749,8 +749,13 @@ static void lower_function(IRModule *mod, ASTNode *fn_node) {
         if (psym) {
             IRInst *st = make_inst(mod->arena, IR_STORE_STACK);
             st->dest.offset = psym->stack_offset;
-            st->src1.vreg = -1; /* Special flag indicating incoming arg register */
-            st->src1.imm = reg_idx++;
+            if (reg_idx < 6) {
+                st->src1.vreg = -1; /* Incoming arg register */
+                st->src1.imm = reg_idx++;
+            } else {
+                st->src1.vreg = -2; /* Incoming stack arg: 16(%rbp), 24(%rbp), etc. */
+                st->src1.imm = 16 + (reg_idx++ - 6) * 8;
+            }
             ir_emit(fn, st);
         }
     }

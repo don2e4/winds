@@ -48,9 +48,25 @@ static double get_time_ms(void) {
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
 }
 
+static bool is_supported_x86_64(const char *triple) {
+    if (!triple) return true;
+    if (strncmp(triple, "x86_64", 6) == 0 ||
+        strncmp(triple, "amd64", 5) == 0 ||
+        strncmp(triple, "x86-64", 6) == 0) {
+        return true;
+    }
+    return false;
+}
+
 int driver_run(const DriverConfig *config) {
     if (!config->input_file) {
         fprintf(stderr, "winds: error: no input file specified\n");
+        return 1;
+    }
+
+    if (config->target_triple && !is_supported_x86_64(config->target_triple)) {
+        fprintf(stderr, "winds: error: unsupported target architecture in '%s' (winds currently supports x86_64/amd64)\n",
+                config->target_triple);
         return 1;
     }
 
@@ -71,6 +87,31 @@ int driver_run(const DriverConfig *config) {
     for (int i = 0; i < config->include_path_count; i++) {
         parser_add_include_path(&parser, config->include_paths[i]);
     }
+
+    if (config->sysroot && config->sysroot[0] != '\0') {
+        char path1[512];
+        char path2[512];
+        char path3[512];
+        snprintf(path1, sizeof(path1), "%s/usr/include", config->sysroot);
+        snprintf(path2, sizeof(path2), "%s/usr/include/x86_64-linux-gnu", config->sysroot);
+        snprintf(path3, sizeof(path3), "%s/include", config->sysroot);
+        if (access(path1, F_OK) == 0) {
+            char *p1 = arena_alloc(arena, strlen(path1) + 1);
+            strcpy(p1, path1);
+            parser_add_include_path(&parser, p1);
+        }
+        if (access(path2, F_OK) == 0) {
+            char *p2 = arena_alloc(arena, strlen(path2) + 1);
+            strcpy(p2, path2);
+            parser_add_include_path(&parser, p2);
+        }
+        if (access(path3, F_OK) == 0) {
+            char *p3 = arena_alloc(arena, strlen(path3) + 1);
+            strcpy(p3, path3);
+            parser_add_include_path(&parser, p3);
+        }
+    }
+
     ASTNode *ast = parser_parse(&parser);
 
     if (diag_error_count() > 0) {
@@ -114,6 +155,7 @@ int driver_run(const DriverConfig *config) {
             .enable_copy_prop = true,
             .enable_algebraic = true,
             .enable_cfg_opt = true,
+            .enable_cfg_simplify = true,
             .enable_unreachable = true,
             .enable_dce = true
         };
@@ -168,12 +210,42 @@ int driver_run(const DriverConfig *config) {
         return 0;
     }
 
+    /* Resolve assembler and linker binaries */
+    char as_bin[256] = "as";
+    char gcc_bin[256] = "gcc";
+
+    if (config->cross_prefix && config->cross_prefix[0] != '\0') {
+        snprintf(as_bin, sizeof(as_bin), "%sas", config->cross_prefix);
+        snprintf(gcc_bin, sizeof(gcc_bin), "%sgcc", config->cross_prefix);
+    } else if (config->target_triple && config->target_triple[0] != '\0') {
+        char target_as[256];
+        char target_gcc[256];
+        snprintf(target_as, sizeof(target_as), "%s-as", config->target_triple);
+        snprintf(target_gcc, sizeof(target_gcc), "%s-gcc", config->target_triple);
+
+        char check_cmd[300];
+        snprintf(check_cmd, sizeof(check_cmd), "command -v %s >/dev/null 2>&1", target_gcc);
+        if (system(check_cmd) == 0) {
+            snprintf(as_bin, sizeof(as_bin), "%s", target_as);
+            snprintf(gcc_bin, sizeof(gcc_bin), "%s", target_gcc);
+        } else if (config->verbose) {
+            printf("winds: note: cross toolchain '%s' not found; using host '%s'\n",
+                   target_gcc, gcc_bin);
+        }
+    }
+
     /* 6. Assemble or Link */
     if (config->compile_only) {
         const char *obj_file = config->output_file ? config->output_file : "a.o";
         char cmd[512];
-        snprintf(cmd, sizeof(cmd), "as %s -o %s", asm_file, obj_file);
+        snprintf(cmd, sizeof(cmd), "%s %s -o %s", as_bin, asm_file, obj_file);
+        if (config->verbose) {
+            printf("winds: executing: %s\n", cmd);
+        }
         int ret = system(cmd);
+        if (ret != 0) {
+            fprintf(stderr, "winds: error: assembler failed with exit code %d\n", ret);
+        }
         if (is_temp_asm) unlink(asm_file);
         free(source);
         arena_destroy(arena);
@@ -183,9 +255,21 @@ int driver_run(const DriverConfig *config) {
 
     /* Full executable link via gcc driver */
     const char *out_binary = config->output_file ? config->output_file : "a.out";
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "gcc %s -o %s -no-pie -lm", asm_file, out_binary);
+    char cmd[1024];
+    if (config->sysroot && config->sysroot[0] != '\0') {
+        snprintf(cmd, sizeof(cmd), "%s %s -o %s --sysroot=%s -no-pie -lm",
+                 gcc_bin, asm_file, out_binary, config->sysroot);
+    } else {
+        snprintf(cmd, sizeof(cmd), "%s %s -o %s -no-pie -lm",
+                 gcc_bin, asm_file, out_binary);
+    }
+    if (config->verbose) {
+        printf("winds: executing: %s\n", cmd);
+    }
     int ret = system(cmd);
+    if (ret != 0) {
+        fprintf(stderr, "winds: error: linker failed with exit code %d\n", ret);
+    }
 
     if (is_temp_asm) {
         unlink(asm_file);

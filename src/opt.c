@@ -788,6 +788,91 @@ bool opt_cfg_optimization(IRFunction *fn) {
 }
 
 /* =========================================================================
+ * 4b. CFG Simplification Pass
+ * ========================================================================= */
+
+bool opt_cfg_simplify(IRFunction *fn) {
+    if (!fn || !fn->first_inst) return false;
+
+    bool changed = false;
+
+    /* 1. Invert conditional branch over unconditional jump */
+    for (IRInst *inst = fn->first_inst; inst != NULL; ) {
+        if (inst->op == IR_JMP_IF_ZERO || inst->op == IR_JMP_IF_NOT_ZERO) {
+            IRInst *next = inst->next;
+            if (next && next->op == IR_JMP) {
+                IRInst *target_lbl = next->next;
+                if (target_lbl && target_lbl->op == IR_LABEL &&
+                    inst->dest.label && target_lbl->dest.label &&
+                    strcmp(inst->dest.label, target_lbl->dest.label) == 0) {
+                    /* Invert condition and jump directly to the unconditional jump's target */
+                    inst->op = (inst->op == IR_JMP_IF_ZERO) ? IR_JMP_IF_NOT_ZERO : IR_JMP_IF_ZERO;
+                    inst->dest.label = next->dest.label;
+                    remove_inst(fn, next);
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+        inst = inst->next;
+    }
+
+    /* 2. Fold identical conditional and unconditional branch destinations */
+    for (IRInst *inst = fn->first_inst; inst != NULL; ) {
+        if (inst->op == IR_JMP_IF_ZERO || inst->op == IR_JMP_IF_NOT_ZERO) {
+            IRInst *next = inst->next;
+            if (next && next->op == IR_JMP &&
+                inst->dest.label && next->dest.label &&
+                strcmp(inst->dest.label, next->dest.label) == 0) {
+                /* Both branches jump to the same destination */
+                IRInst *to_remove = inst;
+                inst = inst->next;
+                remove_inst(fn, to_remove);
+                changed = true;
+                continue;
+            }
+        }
+        inst = inst->next;
+    }
+
+    /* 3. Consecutive labels deduplication */
+    for (IRInst *inst = fn->first_inst; inst != NULL; ) {
+        if (inst->op == IR_LABEL && inst->next && inst->next->op == IR_LABEL) {
+            const char *keep_lbl = inst->dest.label;
+            const char *remove_lbl = inst->next->dest.label;
+            if (keep_lbl && remove_lbl && strcmp(keep_lbl, remove_lbl) != 0) {
+                /* Replace all references to remove_lbl with keep_lbl */
+                for (IRInst *other = fn->first_inst; other != NULL; other = other->next) {
+                    if ((other->op == IR_JMP || other->op == IR_JMP_IF_ZERO || other->op == IR_JMP_IF_NOT_ZERO) &&
+                        other->dest.label && strcmp(other->dest.label, remove_lbl) == 0) {
+                        other->dest.label = keep_lbl;
+                    }
+                }
+                remove_inst(fn, inst->next);
+                changed = true;
+                continue;
+            }
+        }
+        inst = inst->next;
+    }
+
+    /* 4. Remove dead instructions between unconditional jump or return and next label */
+    for (IRInst *inst = fn->first_inst; inst != NULL; inst = inst->next) {
+        if (inst->op == IR_JMP || inst->op == IR_RET) {
+            IRInst *dead = inst->next;
+            while (dead && dead->op != IR_LABEL) {
+                IRInst *next_dead = dead->next;
+                remove_inst(fn, dead);
+                dead = next_dead;
+                changed = true;
+            }
+        }
+    }
+
+    return changed;
+}
+
+/* =========================================================================
  * 5. Unreachable Block Removal
  * ========================================================================= */
 
@@ -977,6 +1062,9 @@ void opt_run_pipeline(IRModule *mod, OptOptions options) {
             }
             if (options.enable_cfg_opt || options.level >= 1) {
                 changed |= opt_cfg_optimization(fn);
+            }
+            if (options.enable_cfg_simplify || options.enable_cfg_opt || options.level >= 1) {
+                changed |= opt_cfg_simplify(fn);
             }
             if (options.enable_unreachable || options.level >= 1) {
                 changed |= opt_unreachable_block_removal(fn, mod->arena);

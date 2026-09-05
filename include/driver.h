@@ -14,6 +14,11 @@ typedef struct {
     bool emit_ir;       /* --emit-ir */
     int opt_level;      /* -O0, -O1, -O2 */
     bool verbose;       /* -v */
+
+    /* Cross-compilation settings */
+    const char *target_triple; /* --target=<triple> */
+    const char *sysroot;       /* --sysroot=<path> */
+    const char *cross_prefix;  /* --cross-prefix=<prefix> */
 } DriverConfig;
 
 int driver_run(const DriverConfig *config);

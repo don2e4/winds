@@ -160,6 +160,11 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                     if (arg_num >= 0 && arg_num < 6) {
                         fprintf(out, "\tmovq\t%s, %d(%%rbp)\n", k_arg_regs_64[arg_num], inst->dest.offset);
                     }
+                } else if (inst->src1.vreg == -2) {
+                    /* Incoming stack argument from caller: 16(%rbp), 24(%rbp), etc. */
+                    int incoming_stack_off = (int)inst->src1.imm;
+                    fprintf(out, "\tmovq\t%d(%%rbp), %%rax\n", incoming_stack_off);
+                    fprintf(out, "\tmovq\t%%rax, %d(%%rbp)\n", inst->dest.offset);
                 } else {
                     int ps = (inst->src1.vreg > 0) ? get_operand_reg(ra, inst->src1) : -1;
                     if (ps >= 0) {
@@ -334,6 +339,17 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
             }
 
             case IR_CALL: {
+                int n_stack = (inst->call_arg_count > 6) ? (inst->call_arg_count - 6) : 0;
+                int stack_arg_space = 0;
+                if (n_stack > 0) {
+                    stack_arg_space = ((n_stack * 8) + 15) & ~15;
+                    fprintf(out, "\tsubq\t$%d, %%rsp\n", stack_arg_space);
+                    for (int i = 6; i < inst->call_arg_count; i++) {
+                        emit_operand_to_rax(out, inst->call_args[i], ra, local_stack);
+                        fprintf(out, "\tmovq\t%%rax, %d(%%rsp)\n", (i - 6) * 8);
+                    }
+                }
+
                 /* System V ABI: first 6 integer/pointer args in rdi, rsi, rdx, rcx, r8, r9 */
                 for (int i = 0; i < inst->call_arg_count && i < 6; i++) {
                     emit_operand_to_reg(out, k_arg_regs_64[i], inst->call_args[i], ra, local_stack);
@@ -342,6 +358,11 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                 /* Clear %al for variadic function calls */
                 fprintf(out, "\txorl\t%%eax, %%eax\n");
                 fprintf(out, "\tcall\t%s@PLT\n", inst->src1.label);
+
+                if (stack_arg_space > 0) {
+                    fprintf(out, "\taddq\t$%d, %%rsp\n", stack_arg_space);
+                }
+
                 emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
             }

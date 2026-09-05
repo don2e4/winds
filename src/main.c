@@ -12,10 +12,14 @@ static void print_help(const char *prog_name) {
     printf("  -O<level>      Optimization level (-O0, -O1, -O2) [default: -O1]\n");
     printf("  --emit-ast     Dump the parsed Abstract Syntax Tree\n");
     printf("  --emit-ir      Dump the 3-Address Code Intermediate Representation\n");
-    printf("  -I <dir>       Add directory to header include search path\n");
-    printf("  -v, --verbose  Display compiler timing and build pipeline stages\n");
-    printf("  -h, --help     Display this help information\n");
-    printf("  --version      Display compiler version\n");
+    printf("  -I <dir>                 Add directory to header include search path\n");
+    printf("  --target=<triple>        Specify target architecture triple (default: x86_64-linux-gnu)\n");
+    printf("  --sysroot=<path>         Specify system root directory for headers and libraries\n");
+    printf("  --cross-prefix=<prefix>  Specify cross-toolchain prefix (e.g. x86_64-linux-gnu-)\n");
+    printf("  --print-target-triple    Print target architecture triple and exit\n");
+    printf("  -v, --verbose            Display compiler timing and build pipeline stages\n");
+    printf("  -h, --help               Display this help information\n");
+    printf("  --version                Display compiler version\n");
 }
 
 static void print_version(void) {
@@ -33,6 +37,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    bool print_target = false;
+
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
 
@@ -42,6 +48,35 @@ int main(int argc, char **argv) {
         } else if (strcmp(arg, "--version") == 0) {
             print_version();
             return 0;
+        } else if (strcmp(arg, "--print-target-triple") == 0) {
+            print_target = true;
+        } else if (strncmp(arg, "--target=", 9) == 0) {
+            config.target_triple = arg + 9;
+        } else if (strcmp(arg, "--target") == 0 || strcmp(arg, "-target") == 0) {
+            if (i + 1 < argc) {
+                config.target_triple = argv[++i];
+            } else {
+                fprintf(stderr, "winds: error: missing argument to '%s'\n", arg);
+                return 1;
+            }
+        } else if (strncmp(arg, "--sysroot=", 10) == 0) {
+            config.sysroot = arg + 10;
+        } else if (strcmp(arg, "--sysroot") == 0) {
+            if (i + 1 < argc) {
+                config.sysroot = argv[++i];
+            } else {
+                fprintf(stderr, "winds: error: missing argument to '--sysroot'\n");
+                return 1;
+            }
+        } else if (strncmp(arg, "--cross-prefix=", 15) == 0) {
+            config.cross_prefix = arg + 15;
+        } else if (strcmp(arg, "--cross-prefix") == 0) {
+            if (i + 1 < argc) {
+                config.cross_prefix = argv[++i];
+            } else {
+                fprintf(stderr, "winds: error: missing argument to '--cross-prefix'\n");
+                return 1;
+            }
         } else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
             config.verbose = true;
         } else if (strcmp(arg, "-S") == 0) {
@@ -88,6 +123,11 @@ int main(int argc, char **argv) {
             }
             config.input_file = arg;
         }
+    }
+
+    if (print_target) {
+        printf("%s\n", config.target_triple ? config.target_triple : "x86_64-linux-gnu");
+        return 0;
     }
 
     return driver_run(&config);

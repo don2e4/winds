@@ -58,6 +58,8 @@ test: $(TARGET)
 	@$(TARGET) tests/07_optimizations.cpp -o tests/07_optimizations.out
 	@tests/07_optimizations.out && echo "  [PASS] 07_optimizations"
 	@tests/08_diagnostics.sh && echo "  [PASS] 08_diagnostics"
+	@$(TARGET) tests/09_abi.cpp -o tests/09_abi.out
+	@tests/09_abi.out >/dev/null && echo "  [PASS] 09_abi"
 	@echo "All tests passed successfully!"
 
 benchmark: $(TARGET)

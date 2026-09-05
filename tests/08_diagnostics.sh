@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-WINDS=./bin/winds
+WINDS=${WINDS:-./bin/winds}
 
 echo "Testing diagnostics system..."
 
