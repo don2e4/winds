@@ -85,26 +85,26 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(arg, "-run") == 0 || strcmp(arg, "--run") == 0) {
             config.run_mode = true;
-        } else if (strcmp(arg, "-MMD") == 0 || strcmp(arg, "-MD") == 0) {
+        } else if (strcmp(arg, "-MMD") == 0 || strcmp(arg, "-mmd") == 0 || strcmp(arg, "-MD") == 0 || strcmp(arg, "-md") == 0) {
             config.gen_dependencies = true;
-        } else if (strcmp(arg, "-MP") == 0) {
+        } else if (strcmp(arg, "-MP") == 0 || strcmp(arg, "-mp") == 0) {
             config.phony_targets = true;
-        } else if (strncmp(arg, "-MF=", 4) == 0) {
+        } else if (strncmp(arg, "-MF=", 4) == 0 || strncmp(arg, "-mf=", 4) == 0) {
             config.dep_output_file = arg + 4;
-        } else if (strcmp(arg, "-MF") == 0) {
+        } else if (strcmp(arg, "-MF") == 0 || strcmp(arg, "-mf") == 0) {
             if (i + 1 < argc) {
                 config.dep_output_file = argv[++i];
             } else {
                 fprintf(stderr, "winds: error: missing argument to '-MF'\n");
                 return 1;
             }
-        } else if (strcmp(arg, "-Werror") == 0) {
+        } else if (strcmp(arg, "-Werror") == 0 || strcmp(arg, "-werror") == 0) {
             config.warnings_as_errors = true;
-        } else if (strcmp(arg, "-Wall") == 0) {
+        } else if (strcmp(arg, "-Wall") == 0 || strcmp(arg, "-wall") == 0) {
             config.warn_all = true;
-        } else if (strcmp(arg, "-Wextra") == 0) {
+        } else if (strcmp(arg, "-Wextra") == 0 || strcmp(arg, "-wextra") == 0) {
             config.warn_extra = true;
-        } else if (strncmp(arg, "-Wno-", 5) == 0 || strncmp(arg, "-W", 2) == 0) {
+        } else if (strncmp(arg, "-Wno-", 5) == 0 || strncmp(arg, "-wno-", 5) == 0 || strncmp(arg, "-W", 2) == 0 || strncmp(arg, "-w", 2) == 0) {
             /* Accept standard warning flags gracefully */
         } else if (strncmp(arg, "-fdiagnostics-color=", 20) == 0) {
             config.color_diagnostics = arg + 20;
@@ -114,7 +114,7 @@ int main(int argc, char **argv) {
             config.color_diagnostics = "never";
         } else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
             config.verbose = true;
-        } else if (strcmp(arg, "-S") == 0) {
+        } else if (strcmp(arg, "-S") == 0 || strcmp(arg, "-s") == 0) {
             config.emit_assembly = true;
         } else if (strcmp(arg, "-c") == 0) {
             config.compile_only = true;
@@ -122,11 +122,11 @@ int main(int argc, char **argv) {
             config.emit_ast = true;
         } else if (strcmp(arg, "--emit-ir") == 0) {
             config.emit_ir = true;
-        } else if (strcmp(arg, "-O0") == 0) {
+        } else if (strcmp(arg, "-O0") == 0 || strcmp(arg, "-o0") == 0) {
             config.opt_level = 0;
-        } else if (strcmp(arg, "-O1") == 0) {
+        } else if (strcmp(arg, "-O1") == 0 || strcmp(arg, "-o1") == 0) {
             config.opt_level = 1;
-        } else if (strcmp(arg, "-O2") == 0 || strcmp(arg, "-O3") == 0) {
+        } else if (strcmp(arg, "-O2") == 0 || strcmp(arg, "-o2") == 0 || strcmp(arg, "-O3") == 0 || strcmp(arg, "-o3") == 0) {
             config.opt_level = 2;
         } else if (strcmp(arg, "-o") == 0) {
             if (i + 1 < argc) {
@@ -135,14 +135,14 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "winds: error: missing argument to '-o'\n");
                 return 1;
             }
-        } else if (strncmp(arg, "-I", 2) == 0) {
+        } else if (strncmp(arg, "-I", 2) == 0 || strncmp(arg, "-i", 2) == 0) {
             const char *inc_path = NULL;
             if (arg[2] != '\0') {
                 inc_path = arg + 2;
             } else if (i + 1 < argc) {
                 inc_path = argv[++i];
             } else {
-                fprintf(stderr, "winds: error: missing argument to '-I'\n");
+                fprintf(stderr, "winds: error: missing argument to '%s'\n", arg);
                 return 1;
             }
             if (config.include_path_count < 64) {
