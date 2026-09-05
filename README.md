@@ -12,9 +12,9 @@
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/license-mit-7aa2f7.svg" alt="license" /></a>
-  <a href="#benchmarks"><img src="https://img.shields.io/badge/compile_time-0.33_ms-9ece6a.svg" alt="speed" /></a>
-  <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-431_kb-e0af68.svg" alt="size" /></a>
-  <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-11_passing-9ece6a.svg" alt="tests" /></a>
+  <a href="#benchmarks"><img src="https://img.shields.io/badge/compile_time-0.36_ms-9ece6a.svg" alt="speed" /></a>
+  <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-567_kb-e0af68.svg" alt="size" /></a>
+  <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-15_passing-9ece6a.svg" alt="tests" /></a>
 </p>
 
 ---
@@ -44,14 +44,25 @@ mkdir -p build && cd build && cmake .. && cmake --build .
 
 ## benchmarks
 
-benchmarks measured on x86_64 linux compiling `tests/03_classes.cpp` across 20 iterations:
+benchmarks measured on x86_64 linux across 20 iterations:
+
+### 1. core compilation (`tests/03_classes.cpp`)
 
 | metric | clang++ (llvm 22.1) | winds | advantage |
 |---|:---|:---|:---|
-| **frontend + codegen (`-s`)** | `11.76 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `0.33 ms` &nbsp; ▰ | **~35x faster** |
-| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `431 kb` &nbsp; ▰ | **~465x lighter** |
+| **frontend + codegen (`-s`)** | `11.91 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `0.36 ms` &nbsp; ▰ | **~33x faster** |
+| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `567 kb` &nbsp; ▰ | **~354x lighter** |
 | **runtime dependencies** | libllvm, libclang-cpp, libc++ | glibc only | **100% self-contained** |
 | **memory teardown** | recursive reference counting | contiguous bump arena | **instant constant-time exit** |
+
+### 2. standard library compilation (`tests/15_std_library.cpp`)
+
+compiling `<iostream>`, `<string>`, `<vector>`, `<utility>`, `<algorithm>`, `<cstdint>`, `<cassert>`:
+
+| compiler | compile time (`-s`) | advantage |
+|:---|:---|:---|
+| **clang++ (system libc++)** | `157.42 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | baseline |
+| **winds (self-contained std)** | `1.17 ms` &nbsp; ▰ | **~134x faster** |
 
 ## why winds is small and fast
 
@@ -59,7 +70,7 @@ modern compilers often feel sluggish because they carry decades of legacy interm
 
 - **bump arena allocation**: all abstract syntax tree nodes, symbol entries, and intermediate instructions live in contiguous 128 kb blocks. memory allocations take a single pointer bump with zero lock contention, and process cleanup takes one single free call.
 - **linear scan register allocator**: instead of costly graph coloring algorithms with complex spill-reloading passes, winds runs a fast linear scan over live intervals with loop extension and automatic callee-saved register tracking.
-- **zero llvm dependencies**: no massive shared libraries to load into memory on each invocation. the entire compiler binary is only 431 kb.
+- **zero llvm dependencies**: no massive shared libraries to load into memory on each invocation. the entire compiler binary is only 567 kb.
 - **direct native code emission**: the intermediate representation lowers straight to system v amd64 assembly without intermediate serialization steps.
 
 ## compilation pipeline
@@ -166,6 +177,18 @@ void swap(int &first, int &second) {
 ## interactive feature tour
 
 explore the underlying compiler components by expanding the sections below:
+
+<details>
+<summary><strong>templates & bespoke standard library</strong></summary>
+
+- on-demand template class monomorphization (`template <typename t> class name { ... };`)
+- self-contained `<iostream>` with stream chaining (`std::cout << val << std::endl;`)
+- heap-managed `<string>` with dynamic resizing, concatenation, and streaming
+- dynamic `<vector<t>>` container with `push_back`, `pop_back`, and array indexing
+- generic `<utility>` (`std::pair`, `std::make_pair`, `std::swap`) and `<algorithm>` (`std::min`, `std::max`, `std::sort`)
+- zero external compiler runtime dependencies
+
+</details>
 
 <details>
 <summary><strong>object-oriented programming & memory lifecycle</strong></summary>
@@ -287,7 +310,7 @@ ctest --test-dir build --output-on-failure
 
 ### test suites
 
-winds includes 11 automated test suites covering syntax, semantics, and code generation:
+winds includes 15 automated test suites covering syntax, semantics, standard library, and code generation:
 
 - `01_basics.cpp` &mdash; variables, arithmetic precedence, loops, and branches
 - `02_functions.cpp` &mdash; function overloading, pass-by-reference, and recursion
@@ -300,12 +323,16 @@ winds includes 11 automated test suites covering syntax, semantics, and code gen
 - `09_abi.cpp` &mdash; 7+ argument passing, callee-saved preservation, and 16-byte stack alignment
 - `10_dependencies.sh` &mdash; `-mmd`, `-mp`, and `-mf` dependency rules
 - `11_warnings_and_run.sh` &mdash; `-wall` warnings, `-werror` escalation, and `-run` execution
+- `12_operator_overload.cpp` &mdash; member and stream operator overloading (`<<`, `>>`, `[]`, `+`, `==`)
+- `13_typedef.cpp` &mdash; type aliases via `typedef` and `using`
+- `14_templates.cpp` &mdash; template class monomorphization (`box<t>`, `pair<t1, t2>`)
+- `15_std_library.cpp` &mdash; self-contained standard library containers and streams
 
 ## roadmap
 
 - [x] **phase 1**: script execution mode (`-run`), shebang support, makefile dependency tracking (`-mmd`, `-mp`, `-mf`), warning controls (`-wall`, `-wextra`, `-werror`), colored diagnostics
-- [ ] **phase 2**: type aliases (`typedef`, `using`), compiler builtins (`__builtin_expect`, `__builtin_unreachable`, `__builtin_clz`), parameterized preprocessor macro expansions
-- [ ] **phase 3**: pointers to members, function pointers, and initial template specialization
+- [x] **phase 2**: operator overloading, type aliases (`typedef`, `using`), template class monomorphization, 12 self-contained standard library headers (`<iostream>`, `<string>`, `<vector>`, etc.)
+- [ ] **phase 3**: pointers to members, function pointers, variadic templates, and preprocessor macro expansions
 
 ## license
 
