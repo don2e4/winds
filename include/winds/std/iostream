@@ -1,0 +1,72 @@
+#ifndef winds_iostream_h
+#define winds_iostream_h
+
+#include <cstdio>
+#include <cstddef>
+
+namespace std {
+    class ostream {
+    public:
+        ostream() {}
+
+        ostream& operator<<(const char *s) {
+            if (s) {
+                printf("%s", s);
+            }
+            return *this;
+        }
+
+        ostream& operator<<(int n) {
+            printf("%d", n);
+            return *this;
+        }
+
+        ostream& operator<<(long n) {
+            printf("%ld", n);
+            return *this;
+        }
+
+        ostream& operator<<(char c) {
+            putchar(c);
+            return *this;
+        }
+
+        ostream& operator<<(bool b) {
+            if (b) {
+                printf("true");
+            } else {
+                printf("false");
+            }
+            return *this;
+        }
+
+        ostream& operator<<(void *p) {
+            printf("%p", p);
+            return *this;
+        }
+    };
+
+    class istream {
+    public:
+        istream() {}
+
+        istream& operator>>(int &n) {
+            scanf("%d", &n);
+            return *this;
+        }
+
+        istream& operator>>(char &c) {
+            int ch = getchar();
+            c = ch;
+            return *this;
+        }
+    };
+
+    static ostream cout;
+    static ostream cerr;
+    static istream cin;
+
+    static const char *endl = "\n";
+}
+
+#endif

@@ -9,7 +9,8 @@ typedef enum {
     SYM_VAR,
     SYM_FUNC,
     SYM_CLASS,
-    SYM_NAMESPACE
+    SYM_NAMESPACE,
+    SYM_TYPEDEF
 } SymbolKind;
 
 struct Symbol {

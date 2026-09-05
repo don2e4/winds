@@ -30,6 +30,10 @@ typedef enum {
     TOK_KW_BREAK,
     TOK_KW_CONTINUE,
     TOK_KW_SIZEOF,
+    TOK_KW_OPERATOR,
+    TOK_KW_TYPEDEF,
+    TOK_KW_TEMPLATE,
+    TOK_KW_TYPENAME,
 
     /* Types */
     TOK_KW_VOID,
@@ -38,6 +42,8 @@ typedef enum {
     TOK_KW_SHORT,
     TOK_KW_INT,
     TOK_KW_LONG,
+    TOK_KW_SIGNED,
+    TOK_KW_UNSIGNED,
     TOK_KW_FLOAT,
     TOK_KW_DOUBLE,
     TOK_KW_CONST,

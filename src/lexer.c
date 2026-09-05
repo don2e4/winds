@@ -233,7 +233,7 @@ static void handle_preprocessor(Lexer *l) {
 
             /* 3. Search default search paths */
             if (!found) {
-                const char *defaults[] = { "./include", "include", "/usr/include", "/usr/local/include" };
+                const char *defaults[] = { "include/winds/std", "./include/winds/std", "./include", "include", "/usr/include", "/usr/local/include" };
                 for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
                     snprintf(resolved_path, sizeof(resolved_path), "%s/%s", defaults[i], header_name);
                     FILE *tf = fopen(resolved_path, "rb");
@@ -422,12 +422,18 @@ static Token scan_identifier_or_keyword(Lexer *l, SourceLoc loc) {
     else if (strcmp(name, "break") == 0) tok.kind = TOK_KW_BREAK;
     else if (strcmp(name, "continue") == 0) tok.kind = TOK_KW_CONTINUE;
     else if (strcmp(name, "sizeof") == 0) tok.kind = TOK_KW_SIZEOF;
+    else if (strcmp(name, "operator") == 0) tok.kind = TOK_KW_OPERATOR;
+    else if (strcmp(name, "typedef") == 0) tok.kind = TOK_KW_TYPEDEF;
+    else if (strcmp(name, "template") == 0) tok.kind = TOK_KW_TEMPLATE;
+    else if (strcmp(name, "typename") == 0) tok.kind = TOK_KW_TYPENAME;
     else if (strcmp(name, "void") == 0) tok.kind = TOK_KW_VOID;
     else if (strcmp(name, "bool") == 0) tok.kind = TOK_KW_BOOL;
     else if (strcmp(name, "char") == 0) tok.kind = TOK_KW_CHAR;
     else if (strcmp(name, "short") == 0) tok.kind = TOK_KW_SHORT;
     else if (strcmp(name, "int") == 0) tok.kind = TOK_KW_INT;
     else if (strcmp(name, "long") == 0) tok.kind = TOK_KW_LONG;
+    else if (strcmp(name, "signed") == 0) tok.kind = TOK_KW_SIGNED;
+    else if (strcmp(name, "unsigned") == 0) tok.kind = TOK_KW_UNSIGNED;
     else if (strcmp(name, "float") == 0) tok.kind = TOK_KW_FLOAT;
     else if (strcmp(name, "double") == 0) tok.kind = TOK_KW_DOUBLE;
     else if (strcmp(name, "const") == 0) tok.kind = TOK_KW_CONST;

@@ -1,0 +1,14 @@
+#ifndef winds_cstddef_h
+#define winds_cstddef_h
+
+typedef unsigned long size_t;
+typedef long ptrdiff_t;
+typedef void *nullptr_t;
+
+namespace std {
+    using size_t = unsigned long;
+    using ptrdiff_t = long;
+    using nullptr_t = void*;
+}
+
+#endif

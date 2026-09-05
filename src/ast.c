@@ -1,3 +1,4 @@
+#include <string.h>
 #include "ast.h"
 #include "str.h"
 
@@ -93,8 +94,16 @@ bool type_equals(Type *a, Type *b) {
             return type_equals(a->ref.base, b->ref.base);
         case TYPE_ARRAY:
             return a->array.count == b->array.count && type_equals(a->array.base, b->array.base);
-        case TYPE_CLASS:
-            return a->name == b->name;
+        case TYPE_CLASS: {
+            if (a->name == b->name) return true;
+            if (!a->name || !b->name) return false;
+            if (strcmp(a->name, b->name) == 0) return true;
+            const char *sa = strrchr(a->name, ':');
+            sa = sa ? sa + 1 : a->name;
+            const char *sb = strrchr(b->name, ':');
+            sb = sb ? sb + 1 : b->name;
+            return strcmp(sa, sb) == 0;
+        }
         case TYPE_FUNC: {
             if (!type_equals(a->func.return_type, b->func.return_type)) return false;
             if (a->func.param_count != b->func.param_count) return false;
@@ -220,6 +229,14 @@ void ast_dump(ASTNode *node, int indent) {
             printf("DeleteExpr: is_array=%d\n", node->delete_expr.is_array);
             ast_dump(node->delete_expr.target, indent + 1);
             break;
+        case AST_INDEX:
+            printf("IndexExpr:\n");
+            ast_dump(node->index_expr.target, indent + 1);
+            ast_dump(node->index_expr.index, indent + 1);
+            break;
+        case AST_SIZEOF:
+            printf("SizeofExpr\n");
+            break;
         case AST_STMT_EXPR:
             printf("ExprStmt:\n");
             ast_dump(node->stmt_expr.expr, indent + 1);
@@ -287,6 +304,13 @@ void ast_dump(ASTNode *node, int indent) {
             for (int i = 0; i < node->ns_decl.count; i++) {
                 ast_dump(node->ns_decl.decls[i], indent + 1);
             }
+            break;
+        case AST_DECL_TYPEDEF:
+            printf("TypedefDecl: %s\n", node->typedef_decl.name);
+            break;
+        case AST_DECL_TEMPLATE:
+            printf("TemplateDecl: typename %s\n", node->template_decl.param_name);
+            ast_dump(node->template_decl.decl, indent + 1);
             break;
         case AST_PROGRAM:
             printf("Program: (%d declarations)\n", node->program.count);

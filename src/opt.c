@@ -79,6 +79,13 @@ bool opt_constant_propagation(IRFunction *fn, Arena *arena) {
     StackConstTable stack_table;
     stack_const_clear(&stack_table);
 
+    int *def_count = arena_alloc_zero(arena, sizeof(int) * max_vreg);
+    for (IRInst *inst = fn->first_inst; inst != NULL; inst = inst->next) {
+        if (inst->dest.vreg > 0 && inst->dest.vreg < max_vreg) {
+            def_count[inst->dest.vreg]++;
+        }
+    }
+
     for (IRInst *inst = fn->first_inst; inst != NULL; inst = inst->next) {
         if (inst->op == IR_LABEL) {
             /* Control flow merge - invalidate stack constants */
@@ -138,7 +145,7 @@ bool opt_constant_propagation(IRFunction *fn, Arena *arena) {
                 inst->src1.imm = val;
                 inst->src1.label = NULL;
                 inst->src1.offset = 0;
-                if (inst->dest.vreg > 0 && inst->dest.vreg < max_vreg) {
+                if (inst->dest.vreg > 0 && inst->dest.vreg < max_vreg && def_count[inst->dest.vreg] == 1) {
                     consts[inst->dest.vreg].is_const = true;
                     consts[inst->dest.vreg].val = val;
                 }
@@ -148,7 +155,7 @@ bool opt_constant_propagation(IRFunction *fn, Arena *arena) {
         }
 
         if (inst->op == IR_IMM) {
-            if (inst->dest.vreg > 0 && inst->dest.vreg < max_vreg) {
+            if (inst->dest.vreg > 0 && inst->dest.vreg < max_vreg && def_count[inst->dest.vreg] == 1) {
                 consts[inst->dest.vreg].is_const = true;
                 consts[inst->dest.vreg].val = inst->src1.imm;
             }
@@ -161,7 +168,7 @@ bool opt_constant_propagation(IRFunction *fn, Arena *arena) {
                 inst->op = IR_IMM;
                 inst->src1.vreg = 0;
                 inst->src1.imm = consts[r].val;
-                if (inst->dest.vreg > 0 && inst->dest.vreg < max_vreg) {
+                if (inst->dest.vreg > 0 && inst->dest.vreg < max_vreg && def_count[inst->dest.vreg] == 1) {
                     consts[inst->dest.vreg].is_const = true;
                     consts[inst->dest.vreg].val = consts[r].val;
                 }
@@ -169,7 +176,7 @@ bool opt_constant_propagation(IRFunction *fn, Arena *arena) {
                 continue;
             } else if (inst->src1.vreg == 0) {
                 inst->op = IR_IMM;
-                if (inst->dest.vreg > 0 && inst->dest.vreg < max_vreg) {
+                if (inst->dest.vreg > 0 && inst->dest.vreg < max_vreg && def_count[inst->dest.vreg] == 1) {
                     consts[inst->dest.vreg].is_const = true;
                     consts[inst->dest.vreg].val = inst->src1.imm;
                 }

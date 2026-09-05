@@ -1,0 +1,62 @@
+#ifndef winds_vector_h
+#define winds_vector_h
+
+#include <cstdlib>
+#include <cstddef>
+
+namespace std {
+    template <typename T>
+    class vector {
+        T *elements;
+        size_t count;
+        size_t capacity_val;
+
+    public:
+        vector() {
+            count = 0;
+            capacity_val = 8;
+            elements = malloc(sizeof(T) * capacity_val);
+        }
+
+        size_t size() {
+            return count;
+        }
+
+        size_t capacity() {
+            return capacity_val;
+        }
+
+        bool empty() {
+            return count == 0;
+        }
+
+        void push_back(T item) {
+            if (count >= capacity_val) {
+                capacity_val = capacity_val * 2;
+                elements = realloc(elements, sizeof(T) * capacity_val);
+            }
+            elements[count] = item;
+            count = count + 1;
+        }
+
+        void pop_back() {
+            if (count > 0) {
+                count = count - 1;
+            }
+        }
+
+        T operator[](size_t idx) {
+            return elements[idx];
+        }
+
+        void clear() {
+            count = 0;
+        }
+
+        T* data() {
+            return elements;
+        }
+    };
+}
+
+#endif

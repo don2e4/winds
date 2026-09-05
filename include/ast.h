@@ -101,6 +101,8 @@ typedef enum {
     AST_DELETE,
     AST_THIS,
     AST_CAST,
+    AST_INDEX,
+    AST_SIZEOF,
 
     /* Statements */
     AST_STMT_EXPR,
@@ -117,6 +119,8 @@ typedef enum {
     AST_DECL_FUNC,
     AST_DECL_CLASS,
     AST_DECL_NAMESPACE,
+    AST_DECL_TYPEDEF,
+    AST_DECL_TEMPLATE,
     AST_PROGRAM
 } ASTNodeKind;
 
@@ -209,6 +213,18 @@ struct ASTNode {
             ASTNode *expr;
         } cast;
 
+        /* AST_INDEX */
+        struct {
+            ASTNode *target;
+            ASTNode *index;
+        } index_expr;
+
+        /* AST_SIZEOF */
+        struct {
+            Type *target_type;
+            ASTNode *target_expr;
+        } sizeof_expr;
+
         /* AST_STMT_EXPR */
         struct {
             ASTNode *expr;
@@ -268,6 +284,7 @@ struct ASTNode {
             bool is_dtor;
             bool is_varargs;
             bool is_extern;
+            bool is_operator;
             int stack_size;
         } func_decl;
 
@@ -286,6 +303,20 @@ struct ASTNode {
             ASTNode **decls;
             int count;
         } ns_decl;
+
+        /* AST_DECL_TYPEDEF */
+        struct {
+            const char *name;
+            Type *aliased_type;
+        } typedef_decl;
+
+        /* AST_DECL_TEMPLATE */
+        struct {
+            const char *param_names[4];
+            int param_count;
+            const char *param_name;
+            ASTNode *decl;
+        } template_decl;
 
         /* AST_PROGRAM */
         struct {

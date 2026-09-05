@@ -1,0 +1,14 @@
+#ifndef winds_cassert_h
+#define winds_cassert_h
+
+extern int puts(const char *s);
+extern void abort();
+
+inline void assert(bool cond) {
+    if (!cond) {
+        puts("assertion failed");
+        abort();
+    }
+}
+
+#endif

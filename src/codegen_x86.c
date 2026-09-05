@@ -372,6 +372,21 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                 fprintf(out, "\tjmp\t%s\n", epilogue_label);
                 break;
 
+            case IR_ADDR_GLOBAL:
+                fprintf(out, "\tleaq\t%s(%%rip), %%rax\n", inst->src1.label);
+                emit_store_rax(out, inst->dest, ra, local_stack);
+                break;
+
+            case IR_LOAD_GLOBAL:
+                fprintf(out, "\tmovq\t%s(%%rip), %%rax\n", inst->src1.label);
+                emit_store_rax(out, inst->dest, ra, local_stack);
+                break;
+
+            case IR_STORE_GLOBAL:
+                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                fprintf(out, "\tmovq\t%%rax, %s(%%rip)\n", inst->dest.label);
+                break;
+
             default:
                 break;
         }
@@ -412,6 +427,22 @@ bool codegen_x86_emit(IRModule *mod, FILE *out) {
                 else fputc(c, out);
             }
             fprintf(out, "\"\n");
+        }
+    }
+
+    /* Emit global variables */
+    for (IRGlobalVar *g = mod->globals; g != NULL; g = g->next) {
+        if (g->is_init) {
+            if (g->init_label) {
+                fprintf(out, "\t.globl\t%s\n\t.data\n\t.align 8\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n\t.quad\t%s\n",
+                        g->name, g->name, g->name, g->size, g->name, g->init_label);
+            } else {
+                fprintf(out, "\t.globl\t%s\n\t.data\n\t.align 8\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n\t.quad\t%ld\n",
+                        g->name, g->name, g->name, g->size, g->name, (long)g->init_val);
+            }
+        } else {
+            fprintf(out, "\t.globl\t%s\n\t.bss\n\t.align 8\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n\t.zero\t%zu\n",
+                    g->name, g->name, g->name, g->size, g->name, g->size);
         }
     }
 

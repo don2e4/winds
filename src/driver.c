@@ -143,6 +143,24 @@ int driver_run(const DriverConfig *config) {
         parser_add_include_path(&parser, config->include_paths[i]);
     }
 
+    char exe_buf[512];
+    ssize_t exe_len = readlink("/proc/self/exe", exe_buf, sizeof(exe_buf) - 1);
+    if (exe_len > 0) {
+        exe_buf[exe_len] = '\0';
+        char *last_slash = strrchr(exe_buf, '/');
+        if (last_slash) {
+            *last_slash = '\0';
+            char std_inc[1024];
+            snprintf(std_inc, sizeof(std_inc), "%s/../include/winds/std", exe_buf);
+            if (access(std_inc, F_OK) == 0) {
+                parser_add_include_path(&parser, arena_strdup(arena, std_inc));
+            }
+        }
+    }
+    if (access("include/winds/std", F_OK) == 0) {
+        parser_add_include_path(&parser, arena_strdup(arena, "include/winds/std"));
+    }
+
     if (config->sysroot && config->sysroot[0] != '\0') {
         char path1[512];
         char path2[512];

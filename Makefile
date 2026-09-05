@@ -62,6 +62,14 @@ test: $(TARGET)
 	@tests/09_abi.out >/dev/null && echo "  [PASS] 09_abi"
 	@tests/10_dependencies.sh && echo "  [PASS] 10_dependencies"
 	@tests/11_warnings_and_run.sh && echo "  [PASS] 11_warnings_and_run"
+	@$(TARGET) tests/12_operator_overload.cpp -o tests/12_operator_overload.out
+	@tests/12_operator_overload.out >/dev/null && echo "  [PASS] 12_operator_overload"
+	@$(TARGET) tests/13_typedef.cpp -o tests/13_typedef.out
+	@tests/13_typedef.out >/dev/null && echo "  [PASS] 13_typedef"
+	@$(TARGET) tests/14_templates.cpp -o tests/14_templates.out
+	@tests/14_templates.out >/dev/null && echo "  [PASS] 14_templates"
+	@$(TARGET) tests/15_std_library.cpp -o tests/15_std_library.out
+	@tests/15_std_library.out >/dev/null && echo "  [PASS] 15_std_library"
 	@echo "All tests passed successfully!"
 
 benchmark: $(TARGET)
@@ -71,8 +79,11 @@ install: $(TARGET)
 	mkdir -p $(INSTALL_BIN)
 	cp $(TARGET) $(INSTALL_BIN)/winds
 	chmod 755 $(INSTALL_BIN)/winds
+	mkdir -p $(PREFIX)/include/winds/std
+	cp -r include/winds/std/* $(PREFIX)/include/winds/std/
 	@echo "winds successfully installed to $(INSTALL_BIN)/winds"
 
 uninstall:
 	rm -f $(INSTALL_BIN)/winds
+	rm -rf $(PREFIX)/include/winds
 	@echo "winds uninstalled from $(INSTALL_BIN)/winds"

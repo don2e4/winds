@@ -1,0 +1,21 @@
+#ifndef winds_cmath_h
+#define winds_cmath_h
+
+namespace std {
+    inline int abs(int x) {
+        if (x < 0) return -x;
+        return x;
+    }
+
+    inline int min(int a, int b) {
+        if (a < b) return a;
+        return b;
+    }
+
+    inline int max(int a, int b) {
+        if (a > b) return a;
+        return b;
+    }
+}
+
+#endif

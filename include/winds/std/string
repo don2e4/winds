@@ -1,0 +1,88 @@
+#ifndef winds_string_h
+#define winds_string_h
+
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+
+namespace std {
+    class string {
+        char *data;
+
+    public:
+        string() {
+            data = malloc(16);
+            data[0] = 0;
+        }
+
+        string(const char *s) {
+            if (!s) {
+                data = malloc(16);
+                data[0] = 0;
+            } else {
+                size_t l = strlen(s);
+                data = malloc(l + 16);
+                memcpy(data, s, l);
+                data[l] = 0;
+            }
+        }
+
+        size_t size() {
+            if (!data) return 0;
+            return strlen(data);
+        }
+
+        size_t length() {
+            if (!data) return 0;
+            return strlen(data);
+        }
+
+        bool empty() {
+            if (!data) return true;
+            return data[0] == 0;
+        }
+
+        const char* c_str() {
+            return data;
+        }
+
+        char operator[](size_t idx) {
+            return data[idx];
+        }
+
+        void push_back(char c) {
+            size_t l = strlen(data);
+            data = realloc(data, l + 2);
+            data[l] = c;
+            data[l + 1] = 0;
+        }
+
+        string operator+(const char *other) {
+            string res(data);
+            if (other) {
+                size_t l1 = strlen(res.data);
+                size_t l2 = strlen(other);
+                res.data = realloc(res.data, l1 + l2 + 1);
+                memcpy(res.data + l1, other, l2);
+                res.data[l1 + l2] = 0;
+            }
+            return res;
+        }
+
+        bool operator==(const char *other) {
+            if (!other) return false;
+            return strcmp(data, other) == 0;
+        }
+
+        bool operator!=(const char *other) {
+            return !(*this == other);
+        }
+    };
+
+    inline ostream& operator<<(ostream &os, string &str) {
+        os << str.c_str();
+        return os;
+    }
+}
+
+#endif

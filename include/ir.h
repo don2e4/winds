@@ -36,7 +36,10 @@ typedef enum {
     IR_JMP_IF_ZERO,
     IR_JMP_IF_NOT_ZERO,
     IR_CALL,
-    IR_RET
+    IR_RET,
+    IR_ADDR_GLOBAL,
+    IR_LOAD_GLOBAL,
+    IR_STORE_GLOBAL
 } IROp;
 
 typedef struct {
@@ -75,10 +78,20 @@ typedef struct IRStringLiteral {
     struct IRStringLiteral *next;
 } IRStringLiteral;
 
+typedef struct IRGlobalVar {
+    const char *name;
+    size_t size;
+    int64_t init_val;
+    const char *init_label;
+    bool is_init;
+    struct IRGlobalVar *next;
+} IRGlobalVar;
+
 struct IRModule {
     Arena *arena;
     IRFunction *functions;
     IRStringLiteral *strings;
+    IRGlobalVar *globals;
     int label_counter;
     int str_counter;
 };

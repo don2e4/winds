@@ -1,0 +1,39 @@
+#ifndef winds_utility_h
+#define winds_utility_h
+
+namespace std {
+    template <typename T1, typename T2>
+    class pair {
+    public:
+        T1 first;
+        T2 second;
+
+        pair() {}
+
+        pair(T1 f, T2 s) {
+            first = f;
+            second = s;
+        }
+
+        bool operator==(pair other) {
+            return first == other.first && second == other.second;
+        }
+
+        bool operator!=(pair other) {
+            return first != other.first || second != other.second;
+        }
+    };
+
+    inline pair<int, int> make_pair(int f, int s) {
+        pair<int, int> p(f, s);
+        return p;
+    }
+
+    inline void swap(int &a, int &b) {
+        int tmp = a;
+        a = b;
+        b = tmp;
+    }
+}
+
+#endif

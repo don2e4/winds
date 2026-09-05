@@ -1,0 +1,43 @@
+#ifndef winds_algorithm_h
+#define winds_algorithm_h
+
+#include <utility>
+
+namespace std {
+    inline int min(int a, int b) {
+        if (a < b) return a;
+        return b;
+    }
+
+    inline int max(int a, int b) {
+        if (a > b) return a;
+        return b;
+    }
+
+    inline void reverse(int *first, int *last) {
+        while (first < last) {
+            last = last - 1;
+            if (first >= last) break;
+            int tmp = *first;
+            *first = *last;
+            *last = tmp;
+            first = first + 1;
+        }
+    }
+
+    inline void sort(int *first, int *last) {
+        int *i = first + 1;
+        while (i < last) {
+            int key = *i;
+            int *j = i - 1;
+            while (j >= first && *j > key) {
+                *(j + 1) = *j;
+                j = j - 1;
+            }
+            *(j + 1) = key;
+            i = i + 1;
+        }
+    }
+}
+
+#endif

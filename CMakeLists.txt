@@ -35,6 +35,9 @@ include(GNUInstallDirs)
 install(TARGETS winds
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+install(DIRECTORY include/winds/std
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/winds
+)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -49,6 +52,10 @@ if(BUILD_TESTING)
         06_headers
         07_optimizations
         09_abi
+        12_operator_overload
+        13_typedef
+        14_templates
+        15_std_library
     )
 
     foreach(TC ${TEST_CASES})
