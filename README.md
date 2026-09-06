@@ -1,6 +1,4 @@
 <p align="center">
-  <img src="assets/logo.jpg" alt="winds logo" width="130" />
-  <br />
   <img src="assets/logo_text.jpg" alt="winds" width="260" />
 </p>
 
