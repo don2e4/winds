@@ -48,10 +48,12 @@ benchmarks measured on x86_64 linux across 20 iterations:
 
 | metric | clang++ (llvm 22.1) | winds | advantage |
 |---|:---|:---|:---|
-| **frontend + codegen (`-s`)** | `11.67 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `0.53 ms` &nbsp; ▰ | **~22x faster** |
-| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `255 kb` &nbsp; ▰ | **~787x lighter** |
+| **frontend + codegen (`-s`)** | `11.89 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `0.53 ms` &nbsp; ▰ | **~22.3x faster** |
+| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `255 kb` &nbsp; ▰ | **~788x lighter** |
 | **runtime dependencies** | libllvm, libclang-cpp, libc++ | glibc only | **100% self-contained** |
 | **memory teardown** | recursive reference counting | contiguous bump arena | **instant constant-time exit** |
+
+winds end-to-end compilation, assembly, and linking: `14.49 ms` minimum, `15.85 ms` average.
 
 ### 2. standard library compilation (`tests/15_std_library.cpp`)
 
@@ -59,8 +61,8 @@ compiling `<iostream>`, `<string>`, `<vector>`, `<utility>`, `<algorithm>`, `<cs
 
 | compiler | compile time (`-s`) | advantage |
 |:---|:---|:---|
-| **clang++ (system libc++)** | `173.15 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | baseline |
-| **winds (self-contained std)** | `2.34 ms` &nbsp; ▰ | **~74x faster** |
+| **clang++ (system libc++)** | `173.70 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | baseline |
+| **winds (self-contained std)** | `2.55 ms` &nbsp; ▰ | **~68.0x faster** |
 
 ## why winds is small and fast
 

@@ -8,6 +8,8 @@ from pathlib import Path
 from statistics import median
 import tempfile
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def peak_rss(command):
     actions = [(os.POSIX_SPAWN_OPEN, fd, os.devnull, os.O_WRONLY, 0o666) for fd in (1, 2)]
@@ -98,9 +100,9 @@ def main():
     if args.baseline:
         compare_builds(args.baseline, target, args.max_regression)
         return
-    test_file = "tests/03_classes.cpp"
-    std_file = "tests/15_std_library.cpp"
-    bench_out = "tests/winds_bench.out"
+    test_file = str(ROOT / "tests/03_classes.cpp")
+    std_file = str(ROOT / "tests/15_std_library.cpp")
+    bench_out = str(ROOT / "tests/winds_bench.out")
     
     print("================================================================")
     print("             compiler benchmark: winds vs clang++               ")
