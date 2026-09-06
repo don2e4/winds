@@ -16,7 +16,9 @@ typedef enum {
     TYPE_REF,
     TYPE_ARRAY,
     TYPE_CLASS,
-    TYPE_FUNC
+    TYPE_FUNC,
+    TYPE_MEMBER_PTR,
+    TYPE_MEMBER_FUNC_PTR
 } TypeKind;
 
 typedef struct TypeParam {
@@ -63,6 +65,14 @@ struct Type {
             int param_count;
             bool is_varargs;
         } func;
+        struct {
+            struct Type *class_type;
+            struct Type *member_type;
+        } member_ptr;
+        struct {
+            struct Type *class_type;
+            struct Type *func_type;
+        } member_func_ptr;
     };
 };
 
@@ -82,6 +92,10 @@ Type *type_func(Arena *arena, Type *ret, TypeParam *params, int count, bool vara
 bool type_equals(Type *a, Type *b);
 bool type_is_integer(Type *t);
 bool type_is_pointer_or_ref(Type *t);
+Type *type_func_ptr(Arena *arena, Type *ret, TypeParam *params, int count, bool varargs);
+bool type_is_func_ptr(Type *t);
+Type *type_member_ptr(Arena *arena, Type *class_type, Type *member_type);
+Type *type_member_func_ptr(Arena *arena, Type *class_type, Type *func_type);
 const char *type_to_string(Arena *arena, Type *t);
 
 /* AST Node Kinds */
@@ -97,12 +111,14 @@ typedef enum {
     AST_ASSIGN,
     AST_CALL,
     AST_MEMBER,
+    AST_MEMBER_PTR_ACCESS,
     AST_NEW,
     AST_DELETE,
     AST_THIS,
     AST_CAST,
     AST_INDEX,
     AST_SIZEOF,
+    AST_PACK_EXPANSION,
 
     /* Statements */
     AST_STMT_EXPR,
@@ -194,11 +210,19 @@ struct ASTNode {
             Field *field;
         } member;
 
+        /* AST_MEMBER_PTR_ACCESS */
+        struct {
+            ASTNode *object;
+            ASTNode *member_ptr;
+            bool is_arrow;
+        } member_ptr_access;
+
         /* AST_NEW */
         struct {
             Type *target_type;
             ASTNode **args;
             int arg_count;
+            const char *ctor_mangled_name;
         } new_expr;
 
         /* AST_DELETE */
@@ -242,7 +266,13 @@ struct ASTNode {
             const char *name;
             ASTNode *init;
             Symbol *sym;
+            bool is_pack;
         } var_decl;
+
+        /* AST_PACK_EXPANSION */
+        struct {
+            ASTNode *expr;
+        } pack_expansion;
 
         /* AST_STMT_IF */
         struct {
@@ -312,8 +342,10 @@ struct ASTNode {
 
         /* AST_DECL_TEMPLATE */
         struct {
-            const char *param_names[4];
+            const char *param_names[16];
+            bool is_pack[16];
             int param_count;
+            bool is_variadic;
             const char *param_name;
             ASTNode *decl;
         } template_decl;

@@ -1,0 +1,37 @@
+#ifndef winds_tuple_h
+#define winds_tuple_h
+
+#include <cstddef>
+#include <utility>
+
+namespace std {
+
+template <typename Head, typename... Tail>
+class tuple {
+public:
+    Head head;
+    tuple<Tail...> tail;
+
+    tuple() {}
+    tuple(Head h, Tail... t) : head(h), tail(t...) {}
+};
+
+template <typename Head>
+class tuple<Head> {
+public:
+    Head head;
+
+    tuple() {}
+    tuple(Head h) : head(h) {}
+};
+
+/* Helper factory function */
+template <typename... Args>
+inline tuple<Args...> make_tuple(Args... args) {
+    tuple<Args...> res(args...);
+    return res;
+}
+
+}
+
+#endif

@@ -4,13 +4,39 @@
 
 typedef struct ClassTemplate {
     const char *name;
-    const char *param_names[4];
+    const char *param_names[16];
+    bool is_pack[16];
     int param_count;
+    bool is_variadic;
     ASTNode *class_decl;
     struct ClassTemplate *next;
 } ClassTemplate;
 
+typedef struct FuncTemplate {
+    const char *name;
+    const char *param_names[16];
+    bool is_pack[16];
+    int param_count;
+    bool is_variadic;
+    ASTNode *func_decl;
+    struct FuncTemplate *next;
+} FuncTemplate;
+
+typedef struct TemplateEnv {
+    const char *param_names[16];
+    bool is_pack[16];
+    int param_count;
+    Type *arg_types[16];
+    int total_arg_count;
+    int pack_idx;
+    Type **pack_args;
+    int pack_arg_count;
+    const char *old_cls;
+    const char *new_cls;
+} TemplateEnv;
+
 static ClassTemplate *s_templates = NULL;
+static FuncTemplate *s_func_templates = NULL;
 static ASTNode *s_current_program = NULL;
 
 static void sema_register_classes(Sema *s, ASTNode *decl, const char *ns_prefix);
@@ -290,27 +316,35 @@ static Symbol *find_method_overload_typed(Scope *scope, const char *cls_name, co
     return best_sym;
 }
 
-static Type *substitute_type(Arena *arena, Type *t, const char **param_names, Type **arg_types, int count, const char *old_cls, const char *new_cls) {
-    if (!t) return NULL;
+static Type *substitute_type(Arena *arena, Type *t, TemplateEnv *env) {
+    if (!t || !env) return t;
     if (t->kind == TYPE_CLASS && t->name) {
-        if (old_cls && new_cls) {
-            const char *old_short = strrchr(old_cls, ':');
-            old_short = old_short ? old_short + 1 : old_cls;
+        if (env->old_cls && env->new_cls) {
+            const char *old_short = strrchr(env->old_cls, ':');
+            old_short = old_short ? old_short + 1 : env->old_cls;
             const char *t_short = strrchr(t->name, ':');
             t_short = t_short ? t_short + 1 : t->name;
-            if (strcmp(t->name, old_cls) == 0 || strcmp(t_short, old_short) == 0) {
+            if (strcmp(t->name, env->old_cls) == 0 || strcmp(t_short, old_short) == 0) {
                 Type *nt = type_new(arena, TYPE_CLASS);
-                nt->name = new_cls;
+                nt->name = env->new_cls;
                 nt->size = 8;
                 nt->align = 8;
                 return nt;
             }
         }
-        for (int i = 0; i < count; i++) {
-            if (strcmp(t->name, param_names[i]) == 0) {
-                return arg_types[i];
+        for (int i = 0; i < env->param_count; i++) {
+            if (env->is_pack[i]) continue;
+            if (strcmp(t->name, env->param_names[i]) == 0) {
+                return env->arg_types[i];
             }
         }
+        if (env->pack_idx != -1 && strcmp(t->name, env->param_names[env->pack_idx]) == 0) {
+            if (env->pack_arg_count > 0 && env->pack_args && env->pack_args[0]) {
+                return env->pack_args[0];
+            }
+            return g_type_void;
+        }
+
         const char *sep = strstr(t->name, "__");
         if (sep) {
             char base[128];
@@ -322,6 +356,7 @@ static Type *substitute_type(Arena *arena, Type *t, const char **param_names, Ty
                 int written = snprintf(buf, sizeof(buf), "%s__", base);
                 const char *p = sep + 2;
                 bool any_sub = false;
+                bool first_arg = true;
                 while (*p && written < (int)sizeof(buf) - 1) {
                     char arg[64];
                     const char *next_sep = strchr(p, '_');
@@ -330,19 +365,47 @@ static Type *substitute_type(Arena *arena, Type *t, const char **param_names, Ty
                     strncpy(arg, p, alen);
                     arg[alen] = '\0';
 
-                    const char *rep = arg;
-                    for (int i = 0; i < count; i++) {
-                        if (strcmp(arg, param_names[i]) == 0) {
-                            if (arg_types[i] && arg_types[i]->name) {
-                                rep = arg_types[i]->name;
-                                any_sub = true;
-                            }
-                            break;
-                        }
+                    size_t arg_len = strlen(arg);
+                    bool is_arg_pack = (arg_len > 3 && strcmp(arg + arg_len - 3, "...") == 0);
+                    char base_arg[64];
+                    if (is_arg_pack) {
+                        memcpy(base_arg, arg, arg_len - 3);
+                        base_arg[arg_len - 3] = '\0';
+                    } else {
+                        strncpy(base_arg, arg, sizeof(base_arg) - 1);
+                        base_arg[sizeof(base_arg) - 1] = '\0';
                     }
-                    written += snprintf(buf + written, sizeof(buf) - written, "%s", rep);
+
+                    if (is_arg_pack && env->pack_idx != -1 && strcmp(base_arg, env->param_names[env->pack_idx]) == 0) {
+                        any_sub = true;
+                        for (int k = 0; k < env->pack_arg_count; k++) {
+                            const char *rep = (env->pack_args[k] && env->pack_args[k]->name) ? env->pack_args[k]->name : "int";
+                            if (!first_arg) written += snprintf(buf + written, sizeof(buf) - written, "_");
+                            written += snprintf(buf + written, sizeof(buf) - written, "%s", rep);
+                            first_arg = false;
+                        }
+                    } else {
+                        const char *rep = arg;
+                        for (int i = 0; i < env->param_count; i++) {
+                            if (strcmp(base_arg, env->param_names[i]) == 0) {
+                                if (env->is_pack[i]) {
+                                    if (env->pack_arg_count > 0 && env->pack_args && env->pack_args[0] && env->pack_args[0]->name) {
+                                        rep = env->pack_args[0]->name;
+                                        any_sub = true;
+                                    }
+                                } else if (env->arg_types[i] && env->arg_types[i]->name) {
+                                    rep = env->arg_types[i]->name;
+                                    any_sub = true;
+                                }
+                                break;
+                            }
+                        }
+                        if (!first_arg) written += snprintf(buf + written, sizeof(buf) - written, "_");
+                        written += snprintf(buf + written, sizeof(buf) - written, "%s", rep);
+                        first_arg = false;
+                    }
+
                     if (!next_sep) break;
-                    written += snprintf(buf + written, sizeof(buf) - written, "_");
                     p = next_sep + 1;
                 }
                 if (any_sub) {
@@ -357,91 +420,176 @@ static Type *substitute_type(Arena *arena, Type *t, const char **param_names, Ty
         return t;
     }
     if (t->kind == TYPE_PTR) {
-        Type *nb = substitute_type(arena, t->ptr.base, param_names, arg_types, count, old_cls, new_cls);
+        Type *nb = substitute_type(arena, t->ptr.base, env);
         return type_ptr(arena, nb);
     }
     if (t->kind == TYPE_REF) {
-        Type *nb = substitute_type(arena, t->ref.base, param_names, arg_types, count, old_cls, new_cls);
+        Type *nb = substitute_type(arena, t->ref.base, env);
         return type_ref(arena, nb);
     }
     if (t->kind == TYPE_ARRAY) {
-        Type *nb = substitute_type(arena, t->array.base, param_names, arg_types, count, old_cls, new_cls);
+        Type *nb = substitute_type(arena, t->array.base, env);
         return type_array(arena, nb, t->array.count);
+    }
+    if (t->kind == TYPE_FUNC) {
+        Type *ret = substitute_type(arena, t->func.return_type, env);
+        TypeParam *phead = NULL;
+        TypeParam **ptail = &phead;
+        int pcount = 0;
+        for (TypeParam *tp = t->func.params; tp != NULL; tp = tp->next) {
+            bool is_pack_tp = false;
+            if (tp->type && tp->type->name && env->pack_idx != -1) {
+                if (strstr(tp->type->name, env->param_names[env->pack_idx])) {
+                    is_pack_tp = true;
+                }
+            }
+            if (is_pack_tp && env->pack_idx != -1) {
+                for (int k = 0; k < env->pack_arg_count; k++) {
+                    TypeParam *ntp = arena_alloc_zero(arena, sizeof(TypeParam));
+                    ntp->type = env->pack_args[k];
+                    char pbuf[64];
+                    snprintf(pbuf, sizeof(pbuf), "%s_%d", tp->name ? tp->name : "arg", k);
+                    ntp->name = arena_strdup(arena, pbuf);
+                    *ptail = ntp;
+                    ptail = &ntp->next;
+                    pcount++;
+                }
+            } else {
+                TypeParam *ntp = arena_alloc_zero(arena, sizeof(TypeParam));
+                ntp->type = substitute_type(arena, tp->type, env);
+                ntp->name = tp->name;
+                *ptail = ntp;
+                ptail = &ntp->next;
+                pcount++;
+            }
+        }
+        return type_func(arena, ret, phead, pcount, t->func.is_varargs);
+    }
+    if (t->kind == TYPE_MEMBER_PTR) {
+        Type *cls = substitute_type(arena, t->member_ptr.class_type, env);
+        Type *mem = substitute_type(arena, t->member_ptr.member_type, env);
+        return type_member_ptr(arena, cls, mem);
+    }
+    if (t->kind == TYPE_MEMBER_FUNC_PTR) {
+        Type *cls = substitute_type(arena, t->member_func_ptr.class_type, env);
+        Type *fn = substitute_type(arena, t->member_func_ptr.func_type, env);
+        return type_member_func_ptr(arena, cls, fn);
     }
     return t;
 }
 
-static ASTNode *clone_and_substitute_ast(Arena *arena, ASTNode *node, const char **param_names, Type **arg_types, int count, const char *old_cls, const char *new_cls) {
-    if (!node) return NULL;
+static ASTNode *clone_and_substitute_ast(Arena *arena, ASTNode *node, TemplateEnv *env) {
+    if (!node || !env) return node;
     ASTNode *res = ast_new(arena, node->kind, node->loc);
     *res = *node;
 
     switch (node->kind) {
         case AST_STMT_BLOCK: {
-            ASTNode **stmts = arena_alloc(arena, sizeof(ASTNode*) * node->block.count);
-            for (int i = 0; i < node->block.count; i++) {
-                stmts[i] = clone_and_substitute_ast(arena, node->block.stmts[i], param_names, arg_types, count, old_cls, new_cls);
+            if (node->block.count > 0) {
+                ASTNode **stmts = arena_alloc(arena, sizeof(ASTNode*) * node->block.count);
+                for (int i = 0; i < node->block.count; i++) {
+                    stmts[i] = clone_and_substitute_ast(arena, node->block.stmts[i], env);
+                }
+                res->block.stmts = stmts;
             }
-            res->block.stmts = stmts;
             break;
         }
         case AST_STMT_EXPR:
-            res->stmt_expr.expr = clone_and_substitute_ast(arena, node->stmt_expr.expr, param_names, arg_types, count, old_cls, new_cls);
+            res->stmt_expr.expr = clone_and_substitute_ast(arena, node->stmt_expr.expr, env);
             break;
         case AST_STMT_VAR_DECL:
-            res->var_decl.var_type = substitute_type(arena, node->var_decl.var_type, param_names, arg_types, count, old_cls, new_cls);
-            res->var_decl.init = clone_and_substitute_ast(arena, node->var_decl.init, param_names, arg_types, count, old_cls, new_cls);
+            res->var_decl.var_type = substitute_type(arena, node->var_decl.var_type, env);
+            res->var_decl.init = clone_and_substitute_ast(arena, node->var_decl.init, env);
             res->var_decl.sym = NULL;
             break;
         case AST_STMT_IF:
-            res->if_stmt.cond = clone_and_substitute_ast(arena, node->if_stmt.cond, param_names, arg_types, count, old_cls, new_cls);
-            res->if_stmt.then_branch = clone_and_substitute_ast(arena, node->if_stmt.then_branch, param_names, arg_types, count, old_cls, new_cls);
-            res->if_stmt.else_branch = clone_and_substitute_ast(arena, node->if_stmt.else_branch, param_names, arg_types, count, old_cls, new_cls);
+            res->if_stmt.cond = clone_and_substitute_ast(arena, node->if_stmt.cond, env);
+            res->if_stmt.then_branch = clone_and_substitute_ast(arena, node->if_stmt.then_branch, env);
+            res->if_stmt.else_branch = clone_and_substitute_ast(arena, node->if_stmt.else_branch, env);
             break;
         case AST_STMT_WHILE:
-            res->while_stmt.cond = clone_and_substitute_ast(arena, node->while_stmt.cond, param_names, arg_types, count, old_cls, new_cls);
-            res->while_stmt.body = clone_and_substitute_ast(arena, node->while_stmt.body, param_names, arg_types, count, old_cls, new_cls);
+            res->while_stmt.cond = clone_and_substitute_ast(arena, node->while_stmt.cond, env);
+            res->while_stmt.body = clone_and_substitute_ast(arena, node->while_stmt.body, env);
             break;
         case AST_STMT_FOR:
-            res->for_stmt.init = clone_and_substitute_ast(arena, node->for_stmt.init, param_names, arg_types, count, old_cls, new_cls);
-            res->for_stmt.cond = clone_and_substitute_ast(arena, node->for_stmt.cond, param_names, arg_types, count, old_cls, new_cls);
-            res->for_stmt.step = clone_and_substitute_ast(arena, node->for_stmt.step, param_names, arg_types, count, old_cls, new_cls);
-            res->for_stmt.body = clone_and_substitute_ast(arena, node->for_stmt.body, param_names, arg_types, count, old_cls, new_cls);
+            res->for_stmt.init = clone_and_substitute_ast(arena, node->for_stmt.init, env);
+            res->for_stmt.cond = clone_and_substitute_ast(arena, node->for_stmt.cond, env);
+            res->for_stmt.step = clone_and_substitute_ast(arena, node->for_stmt.step, env);
+            res->for_stmt.body = clone_and_substitute_ast(arena, node->for_stmt.body, env);
             break;
         case AST_STMT_RETURN:
-            res->ret_stmt.expr = clone_and_substitute_ast(arena, node->ret_stmt.expr, param_names, arg_types, count, old_cls, new_cls);
+            res->ret_stmt.expr = clone_and_substitute_ast(arena, node->ret_stmt.expr, env);
             break;
         case AST_BINARY:
-            res->binary.left = clone_and_substitute_ast(arena, node->binary.left, param_names, arg_types, count, old_cls, new_cls);
-            res->binary.right = clone_and_substitute_ast(arena, node->binary.right, param_names, arg_types, count, old_cls, new_cls);
+            res->binary.left = clone_and_substitute_ast(arena, node->binary.left, env);
+            res->binary.right = clone_and_substitute_ast(arena, node->binary.right, env);
             break;
         case AST_UNARY:
-            res->unary.operand = clone_and_substitute_ast(arena, node->unary.operand, param_names, arg_types, count, old_cls, new_cls);
+            res->unary.operand = clone_and_substitute_ast(arena, node->unary.operand, env);
             break;
         case AST_ASSIGN:
-            res->assign.target = clone_and_substitute_ast(arena, node->assign.target, param_names, arg_types, count, old_cls, new_cls);
-            res->assign.value = clone_and_substitute_ast(arena, node->assign.value, param_names, arg_types, count, old_cls, new_cls);
+            res->assign.target = clone_and_substitute_ast(arena, node->assign.target, env);
+            res->assign.value = clone_and_substitute_ast(arena, node->assign.value, env);
             break;
         case AST_INDEX:
-            res->index_expr.target = clone_and_substitute_ast(arena, node->index_expr.target, param_names, arg_types, count, old_cls, new_cls);
-            res->index_expr.index = clone_and_substitute_ast(arena, node->index_expr.index, param_names, arg_types, count, old_cls, new_cls);
+            res->index_expr.target = clone_and_substitute_ast(arena, node->index_expr.target, env);
+            res->index_expr.index = clone_and_substitute_ast(arena, node->index_expr.index, env);
             break;
         case AST_CALL: {
-            res->call.object = clone_and_substitute_ast(arena, node->call.object, param_names, arg_types, count, old_cls, new_cls);
+            res->call.callee = clone_and_substitute_ast(arena, node->call.callee, env);
+            res->call.object = clone_and_substitute_ast(arena, node->call.object, env);
             if (node->call.arg_count > 0) {
-                ASTNode **args = arena_alloc(arena, sizeof(ASTNode*) * node->call.arg_count);
+                int max_args = node->call.arg_count + (env->pack_arg_count > 0 ? env->pack_arg_count * 2 : 1) + 16;
+                ASTNode **args = arena_alloc(arena, sizeof(ASTNode*) * max_args);
+                int new_arg_count = 0;
                 for (int i = 0; i < node->call.arg_count; i++) {
-                    args[i] = clone_and_substitute_ast(arena, node->call.args[i], param_names, arg_types, count, old_cls, new_cls);
+                    ASTNode *arg = node->call.args[i];
+                    bool is_pack_arg = false;
+                    const char *pack_var_name = NULL;
+                    if (arg->kind == AST_PACK_EXPANSION) {
+                        is_pack_arg = true;
+                        if (arg->pack_expansion.expr && arg->pack_expansion.expr->kind == AST_VAR_REF) {
+                            pack_var_name = arg->pack_expansion.expr->var_ref.name;
+                        }
+                    } else if (arg->kind == AST_VAR_REF && env->pack_idx != -1) {
+                        if (strcmp(arg->var_ref.name, env->param_names[env->pack_idx]) == 0) {
+                            is_pack_arg = true;
+                            pack_var_name = arg->var_ref.name;
+                        }
+                    }
+                    if (is_pack_arg && env->pack_idx != -1) {
+                        for (int k = 0; k < env->pack_arg_count; k++) {
+                            char vbuf[64];
+                            snprintf(vbuf, sizeof(vbuf), "%s_%d", pack_var_name ? pack_var_name : "arg", k);
+                            ASTNode *vref = ast_new(arena, AST_VAR_REF, arg->loc);
+                            vref->var_ref.name = arena_strdup(arena, vbuf);
+                            args[new_arg_count++] = vref;
+                        }
+                    } else {
+                        args[new_arg_count++] = clone_and_substitute_ast(arena, arg, env);
+                    }
                 }
                 res->call.args = args;
+                res->call.arg_count = new_arg_count;
             }
-            if (node->call.name && old_cls) {
-                const char *old_short = strrchr(old_cls, ':');
-                old_short = old_short ? old_short + 1 : old_cls;
-                const char *name_short = strrchr(node->call.name, ':');
-                name_short = name_short ? name_short + 1 : node->call.name;
-                if (strcmp(node->call.name, old_cls) == 0 || strcmp(name_short, old_short) == 0) {
-                    res->call.name = new_cls;
+            if (node->call.name) {
+                if (strstr(node->call.name, "__")) {
+                    Type dummy;
+                    memset(&dummy, 0, sizeof(dummy));
+                    dummy.kind = TYPE_CLASS;
+                    dummy.name = node->call.name;
+                    Type *subbed = substitute_type(arena, &dummy, env);
+                    if (subbed && subbed->name) {
+                        res->call.name = subbed->name;
+                    }
+                } else if (env->old_cls) {
+                    const char *old_short = strrchr(env->old_cls, ':');
+                    old_short = old_short ? old_short + 1 : env->old_cls;
+                    const char *name_short = strrchr(node->call.name, ':');
+                    name_short = name_short ? name_short + 1 : node->call.name;
+                    if (strcmp(node->call.name, env->old_cls) == 0 || strcmp(name_short, old_short) == 0) {
+                        res->call.name = env->new_cls;
+                    }
                 }
             }
             res->call.callee_sym = NULL;
@@ -449,34 +597,75 @@ static ASTNode *clone_and_substitute_ast(Arena *arena, ASTNode *node, const char
             break;
         }
         case AST_MEMBER:
-            res->member.object = clone_and_substitute_ast(arena, node->member.object, param_names, arg_types, count, old_cls, new_cls);
+            res->member.object = clone_and_substitute_ast(arena, node->member.object, env);
             res->member.field = NULL;
             break;
+        case AST_MEMBER_PTR_ACCESS:
+            res->member_ptr_access.object = clone_and_substitute_ast(arena, node->member_ptr_access.object, env);
+            res->member_ptr_access.member_ptr = clone_and_substitute_ast(arena, node->member_ptr_access.member_ptr, env);
+            break;
         case AST_NEW: {
-            res->new_expr.target_type = substitute_type(arena, node->new_expr.target_type, param_names, arg_types, count, old_cls, new_cls);
+            res->new_expr.target_type = substitute_type(arena, node->new_expr.target_type, env);
             if (node->new_expr.arg_count > 0) {
-                ASTNode **args = arena_alloc(arena, sizeof(ASTNode*) * node->new_expr.arg_count);
+                int max_args = node->new_expr.arg_count + (env->pack_arg_count > 0 ? env->pack_arg_count * 2 : 1) + 16;
+                ASTNode **args = arena_alloc(arena, sizeof(ASTNode*) * max_args);
+                int new_arg_count = 0;
                 for (int i = 0; i < node->new_expr.arg_count; i++) {
-                    args[i] = clone_and_substitute_ast(arena, node->new_expr.args[i], param_names, arg_types, count, old_cls, new_cls);
+                    ASTNode *arg = node->new_expr.args[i];
+                    bool is_pack_arg = false;
+                    const char *pack_var_name = NULL;
+                    if (arg->kind == AST_PACK_EXPANSION) {
+                        is_pack_arg = true;
+                        if (arg->pack_expansion.expr && arg->pack_expansion.expr->kind == AST_VAR_REF) {
+                            pack_var_name = arg->pack_expansion.expr->var_ref.name;
+                        }
+                    } else if (arg->kind == AST_VAR_REF && env->pack_idx != -1) {
+                        if (strcmp(arg->var_ref.name, env->param_names[env->pack_idx]) == 0) {
+                            is_pack_arg = true;
+                            pack_var_name = arg->var_ref.name;
+                        }
+                    }
+                    if (is_pack_arg && env->pack_idx != -1) {
+                        for (int k = 0; k < env->pack_arg_count; k++) {
+                            char vbuf[64];
+                            snprintf(vbuf, sizeof(vbuf), "%s_%d", pack_var_name ? pack_var_name : "arg", k);
+                            ASTNode *vref = ast_new(arena, AST_VAR_REF, arg->loc);
+                            vref->var_ref.name = arena_strdup(arena, vbuf);
+                            args[new_arg_count++] = vref;
+                        }
+                    } else {
+                        args[new_arg_count++] = clone_and_substitute_ast(arena, arg, env);
+                    }
                 }
                 res->new_expr.args = args;
+                res->new_expr.arg_count = new_arg_count;
             }
             break;
         }
         case AST_DELETE:
-            res->delete_expr.target = clone_and_substitute_ast(arena, node->delete_expr.target, param_names, arg_types, count, old_cls, new_cls);
+            res->delete_expr.target = clone_and_substitute_ast(arena, node->delete_expr.target, env);
             break;
         case AST_CAST:
-            res->cast.target_type = substitute_type(arena, node->cast.target_type, param_names, arg_types, count, old_cls, new_cls);
-            res->cast.expr = clone_and_substitute_ast(arena, node->cast.expr, param_names, arg_types, count, old_cls, new_cls);
+            res->cast.target_type = substitute_type(arena, node->cast.target_type, env);
+            res->cast.expr = clone_and_substitute_ast(arena, node->cast.expr, env);
             break;
         case AST_SIZEOF:
             if (node->sizeof_expr.target_type) {
-                res->sizeof_expr.target_type = substitute_type(arena, node->sizeof_expr.target_type, param_names, arg_types, count, old_cls, new_cls);
+                res->sizeof_expr.target_type = substitute_type(arena, node->sizeof_expr.target_type, env);
             }
             if (node->sizeof_expr.target_expr) {
-                res->sizeof_expr.target_expr = clone_and_substitute_ast(arena, node->sizeof_expr.target_expr, param_names, arg_types, count, old_cls, new_cls);
+                if (node->sizeof_expr.target_expr->kind == AST_VAR_REF && env->pack_idx != -1 &&
+                    strcmp(node->sizeof_expr.target_expr->var_ref.name, env->param_names[env->pack_idx]) == 0) {
+                    res->kind = AST_LIT_INT;
+                    res->int_val = env->pack_arg_count;
+                    res->type = g_type_long;
+                    return res;
+                }
+                res->sizeof_expr.target_expr = clone_and_substitute_ast(arena, node->sizeof_expr.target_expr, env);
             }
+            break;
+        case AST_PACK_EXPANSION:
+            res->pack_expansion.expr = clone_and_substitute_ast(arena, node->pack_expansion.expr, env);
             break;
         default:
             break;
@@ -494,17 +683,57 @@ static Symbol *try_instantiate_class_template(Sema *s, const char *name) {
     strncpy(base_name, name, base_len);
     base_name[base_len] = '\0';
 
-    ClassTemplate *ct = NULL;
-    for (ClassTemplate *it = s_templates; it != NULL; it = it->next) {
-        if (strcmp(it->name, base_name) == 0) {
-            ct = it;
-            break;
+    const char *p = sep + 2;
+    Type *arg_types[16] = {0};
+    int arg_count = 0;
+    while (*p && arg_count < 16) {
+        char arg_name[64];
+        const char *next_sep = strchr(p, '_');
+        size_t len = next_sep ? (size_t)(next_sep - p) : strlen(p);
+        if (len >= sizeof(arg_name)) break;
+        strncpy(arg_name, p, len);
+        arg_name[len] = '\0';
+
+        Type *at = NULL;
+        if (strcmp(arg_name, "int") == 0) at = g_type_int;
+        else if (strcmp(arg_name, "long") == 0) at = g_type_long;
+        else if (strcmp(arg_name, "char") == 0) at = g_type_char;
+        else if (strcmp(arg_name, "bool") == 0) at = g_type_bool;
+        else if (strcmp(arg_name, "void") == 0) at = g_type_void;
+        else {
+            Symbol *sym = find_class_symbol(s, arg_name);
+            if (sym && sym->type) at = sym->type;
+            else {
+                at = type_new(s->arena, TYPE_CLASS);
+                at->name = arena_strdup(s->arena, arg_name);
+                at->size = 8;
+                at->align = 8;
+            }
         }
-        if (!ct && match_class_names(it->name, base_name)) {
-            ct = it;
+        arg_types[arg_count++] = at;
+        if (!next_sep) break;
+        p = next_sep + 1;
+    }
+
+    ClassTemplate *best_ct = NULL;
+    for (ClassTemplate *it = s_templates; it != NULL; it = it->next) {
+        if (strcmp(it->name, base_name) == 0 || match_class_names(it->name, base_name)) {
+            if (!it->is_variadic && it->param_count == arg_count) {
+                best_ct = it;
+                break;
+            } else if (it->is_variadic && !best_ct) {
+                int fixed_params = 0;
+                for (int i = 0; i < it->param_count; i++) {
+                    if (!it->is_pack[i]) fixed_params++;
+                }
+                if (arg_count >= fixed_params) {
+                    best_ct = it;
+                }
+            }
         }
     }
-    if (!ct) return NULL;
+    if (!best_ct) return NULL;
+    ClassTemplate *ct = best_ct;
 
     char canon_name[256];
     snprintf(canon_name, sizeof(canon_name), "%s%s", ct->name, sep);
@@ -539,48 +768,52 @@ static Symbol *try_instantiate_class_template(Sema *s, const char *name) {
         }
     }
 
-    const char *p = sep + 2;
-    Type *arg_types[4] = {0};
-    int arg_count = 0;
-    while (*p && arg_count < 4) {
-        char arg_name[64];
-        const char *next_sep = strchr(p, '_');
-        size_t len = next_sep ? (size_t)(next_sep - p) : strlen(p);
-        if (len >= sizeof(arg_name)) break;
-        strncpy(arg_name, p, len);
-        arg_name[len] = '\0';
-
-        Type *at = NULL;
-        if (strcmp(arg_name, "int") == 0) at = g_type_int;
-        else if (strcmp(arg_name, "long") == 0) at = g_type_long;
-        else if (strcmp(arg_name, "char") == 0) at = g_type_char;
-        else if (strcmp(arg_name, "bool") == 0) at = g_type_bool;
-        else if (strcmp(arg_name, "void") == 0) at = g_type_void;
-        else {
-            Symbol *sym = find_class_symbol(s, arg_name);
-            if (sym && sym->type) at = sym->type;
-            else {
-                at = type_new(s->arena, TYPE_CLASS);
-                at->name = arena_strdup(s->arena, arg_name);
-            }
+    int pack_idx = -1;
+    for (int i = 0; i < ct->param_count; i++) {
+        if (ct->is_pack[i]) {
+            pack_idx = i;
+            break;
         }
-        arg_types[arg_count++] = at;
-        if (!next_sep) break;
-        p = next_sep + 1;
     }
-
-    if (arg_count < ct->param_count) return NULL;
 
     const char *inst_name = arena_strdup(s->arena, canon_name);
     ASTNode *new_cls = ast_new(s->arena, AST_DECL_CLASS, ct->class_decl->loc);
     new_cls->class_decl.name = inst_name;
+
+    TemplateEnv env;
+    memset(&env, 0, sizeof(env));
+    env.param_count = ct->param_count;
+    for (int i = 0; i < ct->param_count; i++) {
+        env.param_names[i] = ct->param_names[i];
+        env.is_pack[i] = ct->is_pack[i];
+    }
+    for (int i = 0; i < arg_count && i < 16; i++) {
+        env.arg_types[i] = arg_types[i];
+    }
+    env.total_arg_count = arg_count;
+    env.pack_idx = pack_idx;
+    env.pack_args = (pack_idx != -1) ? &arg_types[pack_idx] : NULL;
+    env.pack_arg_count = (pack_idx != -1) ? (arg_count >= pack_idx ? arg_count - pack_idx : 0) : 0;
+    env.old_cls = ct->class_decl->class_decl.name;
+    env.new_cls = inst_name;
+
+    if (ct->class_decl->class_decl.fields == NULL && ct->class_decl->class_decl.method_count == 0) {
+        new_cls->class_decl.fields = NULL;
+        new_cls->class_decl.methods = NULL;
+        new_cls->class_decl.method_count = 0;
+        sema_register_classes(s, new_cls, NULL);
+        if (s_current_program) {
+            s_current_program->program.decls[s_current_program->program.count++] = new_cls;
+        }
+        return find_class_symbol(s, canon_name);
+    }
 
     Field *new_fields_head = NULL;
     Field **new_fields_tail = &new_fields_head;
     for (Field *f = ct->class_decl->class_decl.fields; f != NULL; f = f->next) {
         Field *nf = arena_alloc_zero(s->arena, sizeof(Field));
         nf->name = f->name;
-        nf->type = substitute_type(s->arena, f->type, (const char**)ct->param_names, arg_types, ct->param_count, ct->class_decl->class_decl.name, inst_name);
+        nf->type = substitute_type(s->arena, f->type, &env);
         nf->access = f->access;
         *new_fields_tail = nf;
         new_fields_tail = &nf->next;
@@ -602,21 +835,41 @@ static Symbol *try_instantiate_class_template(Sema *s, const char *name) {
             nm->func_decl.name = inst_name;
             nm->func_decl.is_ctor = true;
         }
-        nm->func_decl.func_type = substitute_type(s->arena, orig_m->func_decl.func_type, (const char**)ct->param_names, arg_types, ct->param_count, ct->class_decl->class_decl.name, inst_name);
+        nm->func_decl.func_type = substitute_type(s->arena, orig_m->func_decl.func_type, &env);
 
         if (orig_m->func_decl.param_count > 0) {
-            ASTNode **new_params = arena_alloc(s->arena, sizeof(ASTNode*) * orig_m->func_decl.param_count);
+            int max_params = orig_m->func_decl.param_count + (env.pack_arg_count > 0 ? env.pack_arg_count * 2 : 1) + 16;
+            ASTNode **new_params = arena_alloc(s->arena, sizeof(ASTNode*) * max_params);
+            int new_pcount = 0;
             for (int pi = 0; pi < orig_m->func_decl.param_count; pi++) {
                 ASTNode *pnode = orig_m->func_decl.params[pi];
-                ASTNode *np = ast_new(s->arena, AST_STMT_VAR_DECL, pnode->loc);
-                np->var_decl.name = pnode->var_decl.name;
-                np->var_decl.var_type = substitute_type(s->arena, pnode->var_decl.var_type, (const char**)ct->param_names, arg_types, ct->param_count, ct->class_decl->class_decl.name, inst_name);
-                new_params[pi] = np;
+                bool is_pack_p = pnode->var_decl.is_pack;
+                if (!is_pack_p && env.pack_idx != -1 && pnode->var_decl.var_type && pnode->var_decl.var_type->name) {
+                    if (strstr(pnode->var_decl.var_type->name, env.param_names[env.pack_idx])) {
+                        is_pack_p = true;
+                    }
+                }
+                if (is_pack_p && env.pack_idx != -1) {
+                    for (int k = 0; k < env.pack_arg_count; k++) {
+                        char pbuf[64];
+                        snprintf(pbuf, sizeof(pbuf), "%s_%d", pnode->var_decl.name, k);
+                        ASTNode *np = ast_new(s->arena, AST_STMT_VAR_DECL, pnode->loc);
+                        np->var_decl.name = arena_strdup(s->arena, pbuf);
+                        np->var_decl.var_type = env.pack_args[k];
+                        new_params[new_pcount++] = np;
+                    }
+                } else {
+                    ASTNode *np = ast_new(s->arena, AST_STMT_VAR_DECL, pnode->loc);
+                    np->var_decl.name = pnode->var_decl.name;
+                    np->var_decl.var_type = substitute_type(s->arena, pnode->var_decl.var_type, &env);
+                    new_params[new_pcount++] = np;
+                }
             }
             nm->func_decl.params = new_params;
+            nm->func_decl.param_count = new_pcount;
         }
 
-        nm->func_decl.body = clone_and_substitute_ast(s->arena, orig_m->func_decl.body, (const char**)ct->param_names, arg_types, ct->param_count, ct->class_decl->class_decl.name, inst_name);
+        nm->func_decl.body = clone_and_substitute_ast(s->arena, orig_m->func_decl.body, &env);
         new_methods[m] = nm;
     }
     new_cls->class_decl.methods = new_methods;
@@ -685,14 +938,241 @@ static Type *resolve_type(Sema *s, Type *t) {
         }
         return t;
     }
-    if (t->kind == TYPE_REF) {
-        Type *base = resolve_type(s, t->ref.base);
-        if (base != t->ref.base) {
-            return type_ref(s->arena, base);
+    if (t->kind == TYPE_ARRAY) {
+        Type *base = resolve_type(s, t->array.base);
+        if (base != t->array.base) {
+            return type_array(s->arena, base, t->array.count);
+        }
+        return t;
+    }
+    if (t->kind == TYPE_FUNC) {
+        Type *ret = resolve_type(s, t->func.return_type);
+        TypeParam *phead = NULL;
+        TypeParam **ptail = &phead;
+        for (TypeParam *tp = t->func.params; tp != NULL; tp = tp->next) {
+            TypeParam *ntp = arena_alloc_zero(s->arena, sizeof(TypeParam));
+            ntp->type = resolve_type(s, tp->type);
+            ntp->name = tp->name;
+            *ptail = ntp;
+            ptail = &ntp->next;
+        }
+        return type_func(s->arena, ret, phead, t->func.param_count, t->func.is_varargs);
+    }
+    if (t->kind == TYPE_MEMBER_PTR) {
+        Type *cls = resolve_type(s, t->member_ptr.class_type);
+        Type *mem = resolve_type(s, t->member_ptr.member_type);
+        if (cls != t->member_ptr.class_type || mem != t->member_ptr.member_type) {
+            return type_member_ptr(s->arena, cls, mem);
+        }
+        return t;
+    }
+    if (t->kind == TYPE_MEMBER_FUNC_PTR) {
+        Type *cls = resolve_type(s, t->member_func_ptr.class_type);
+        Type *fn = resolve_type(s, t->member_func_ptr.func_type);
+        if (cls != t->member_func_ptr.class_type || fn != t->member_func_ptr.func_type) {
+            return type_member_func_ptr(s->arena, cls, fn);
         }
         return t;
     }
     return t;
+}
+
+static Symbol *try_instantiate_func_template(Sema *s, ASTNode *call_expr) {
+    if (!call_expr || !call_expr->call.name) return NULL;
+
+    const char *call_name = call_expr->call.name;
+
+    /* Base name of function: could be "make_tuple" or "make_tuple__int_int" */
+    char base_name[128];
+    const char *sep = strstr(call_name, "__");
+    if (sep) {
+        size_t blen = (size_t)(sep - call_name);
+        if (blen >= sizeof(base_name)) return NULL;
+        memcpy(base_name, call_name, blen);
+        base_name[blen] = '\0';
+    } else {
+        snprintf(base_name, sizeof(base_name), "%s", call_name);
+    }
+
+    FuncTemplate *ft = NULL;
+    for (FuncTemplate *it = s_func_templates; it != NULL; it = it->next) {
+        if (strcmp(it->name, base_name) == 0 || match_class_names(it->name, base_name)) {
+            ft = it;
+            break;
+        }
+    }
+    if (!ft) return NULL;
+
+    /* Deduce or extract template arguments */
+    Type *arg_types[16];
+    int arg_count = 0;
+
+    if (sep) {
+        /* Explicit template arguments, e.g. fn__int_double */
+        const char *p = sep + 2;
+        while (*p && arg_count < 16) {
+            char aname[64];
+            const char *next_sep = strchr(p, '_');
+            size_t alen = next_sep ? (size_t)(next_sep - p) : strlen(p);
+            if (alen >= sizeof(aname)) break;
+            memcpy(aname, p, alen);
+            aname[alen] = '\0';
+
+            Type *at = NULL;
+            if (strcmp(aname, "int") == 0) at = g_type_int;
+            else if (strcmp(aname, "char") == 0) at = g_type_char;
+            else if (strcmp(aname, "long") == 0) at = g_type_long;
+            else if (strcmp(aname, "bool") == 0) at = g_type_bool;
+            else if (strcmp(aname, "void") == 0) at = g_type_void;
+            else {
+                Symbol *csym = find_class_symbol(s, aname);
+                if (csym && csym->type) at = csym->type;
+                else {
+                    at = type_new(s->arena, TYPE_CLASS);
+                    at->name = arena_strdup(s->arena, aname);
+                    at->size = 8;
+                    at->align = 8;
+                }
+            }
+            arg_types[arg_count++] = at;
+            if (!next_sep) break;
+            p = next_sep + 1;
+        }
+    } else {
+        /* Deduce from call argument types */
+        for (int i = 0; i < call_expr->call.arg_count && i < 16; i++) {
+            Type *at = call_expr->call.args[i] ? call_expr->call.args[i]->type : g_type_int;
+            if (at && at->kind == TYPE_REF) at = at->ref.base;
+            arg_types[arg_count++] = at ? at : g_type_int;
+        }
+    }
+
+    /* Build canonical specialized function name: base_name__arg0_arg1 */
+    char canon_name[256];
+    int written = snprintf(canon_name, sizeof(canon_name), "%s__", ft->name);
+    for (int i = 0; i < arg_count; i++) {
+        const char *aname = (arg_types[i] && arg_types[i]->name) ? arg_types[i]->name : "int";
+        if (i > 0) written += snprintf(canon_name + written, sizeof(canon_name) - written, "_");
+        written += snprintf(canon_name + written, sizeof(canon_name) - written, "%s", aname);
+    }
+
+    const char *short_base = strrchr(ft->name, ':');
+    short_base = short_base ? short_base + 1 : ft->name;
+    char short_name[256];
+    int swritten = snprintf(short_name, sizeof(short_name), "%s__", short_base);
+    for (int i = 0; i < arg_count; i++) {
+        const char *aname = (arg_types[i] && arg_types[i]->name) ? arg_types[i]->name : "int";
+        if (i > 0) swritten += snprintf(short_name + swritten, sizeof(short_name) - swritten, "_");
+        swritten += snprintf(short_name + swritten, sizeof(short_name) - swritten, "%s", aname);
+    }
+
+    /* Check if already instantiated */
+    for (Scope *sc = s->global_scope; sc != NULL; sc = sc->parent) {
+        for (Symbol *sym = sc->symbols; sym != NULL; sym = sym->next) {
+            if (sym->kind == SYM_FUNC && sym->name &&
+                (strcmp(sym->name, canon_name) == 0 || strcmp(sym->name, short_name) == 0)) {
+                return sym;
+            }
+        }
+    }
+
+    /* Build TemplateEnv */
+    int pack_idx = -1;
+    for (int i = 0; i < ft->param_count; i++) {
+        if (ft->is_pack[i]) {
+            pack_idx = i;
+            break;
+        }
+    }
+
+    TemplateEnv env;
+    memset(&env, 0, sizeof(env));
+    env.param_count = ft->param_count;
+    for (int i = 0; i < ft->param_count; i++) {
+        env.param_names[i] = ft->param_names[i];
+        env.is_pack[i] = ft->is_pack[i];
+    }
+    for (int i = 0; i < arg_count && i < 16; i++) {
+        env.arg_types[i] = arg_types[i];
+    }
+    env.total_arg_count = arg_count;
+    env.pack_idx = pack_idx;
+    env.pack_args = (pack_idx != -1) ? &arg_types[pack_idx] : NULL;
+    env.pack_arg_count = (pack_idx != -1) ? (arg_count >= pack_idx ? arg_count - pack_idx : 0) : 0;
+    env.old_cls = NULL;
+    env.new_cls = NULL;
+
+    /* Instantiate new function AST */
+    ASTNode *orig_fn = ft->func_decl;
+    ASTNode *new_fn = ast_new(s->arena, AST_DECL_FUNC, orig_fn->loc);
+    new_fn->func_decl = orig_fn->func_decl;
+    new_fn->func_decl.name = arena_strdup(s->arena, canon_name);
+    new_fn->func_decl.func_type = substitute_type(s->arena, orig_fn->func_decl.func_type, &env);
+
+    if (orig_fn->func_decl.param_count > 0) {
+        int max_params = orig_fn->func_decl.param_count + (env.pack_arg_count > 0 ? env.pack_arg_count * 2 : 1) + 16;
+        ASTNode **new_params = arena_alloc(s->arena, sizeof(ASTNode*) * max_params);
+        int new_pcount = 0;
+        for (int pi = 0; pi < orig_fn->func_decl.param_count; pi++) {
+            ASTNode *pnode = orig_fn->func_decl.params[pi];
+            bool is_pack_p = pnode->var_decl.is_pack;
+            if (!is_pack_p && env.pack_idx != -1 && pnode->var_decl.var_type && pnode->var_decl.var_type->name) {
+                if (strstr(pnode->var_decl.var_type->name, env.param_names[env.pack_idx])) {
+                    is_pack_p = true;
+                }
+            }
+            if (is_pack_p && env.pack_idx != -1) {
+                for (int k = 0; k < env.pack_arg_count; k++) {
+                    char pbuf[64];
+                    snprintf(pbuf, sizeof(pbuf), "%s_%d", pnode->var_decl.name, k);
+                    ASTNode *np = ast_new(s->arena, AST_STMT_VAR_DECL, pnode->loc);
+                    np->var_decl.name = arena_strdup(s->arena, pbuf);
+                    np->var_decl.var_type = env.pack_args[k];
+                    new_params[new_pcount++] = np;
+                }
+            } else {
+                ASTNode *np = ast_new(s->arena, AST_STMT_VAR_DECL, pnode->loc);
+                np->var_decl.name = pnode->var_decl.name;
+                np->var_decl.var_type = substitute_type(s->arena, pnode->var_decl.var_type, &env);
+                new_params[new_pcount++] = np;
+            }
+        }
+        new_fn->func_decl.params = new_params;
+        new_fn->func_decl.param_count = new_pcount;
+    }
+
+    new_fn->func_decl.body = clone_and_substitute_ast(s->arena, orig_fn->func_decl.body, &env);
+
+    sema_analyze_decls(s, new_fn, NULL);
+
+    if (s_current_program) {
+        s_current_program->program.decls[s_current_program->program.count++] = new_fn;
+    }
+
+    Symbol *main_sym = NULL;
+    for (Scope *sc = s->global_scope; sc != NULL; sc = sc->parent) {
+        for (Symbol *sym = sc->symbols; sym != NULL; sym = sym->next) {
+            if (sym->kind == SYM_FUNC && sym->name && strcmp(sym->name, canon_name) == 0) {
+                main_sym = sym;
+                break;
+            }
+        }
+        if (main_sym) break;
+    }
+
+    if (strcmp(canon_name, short_name) != 0) {
+        Symbol *short_sym = arena_alloc_zero(s->arena, sizeof(Symbol));
+        short_sym->kind = SYM_FUNC;
+        short_sym->name = arena_strdup(s->arena, short_name);
+        short_sym->type = new_fn->func_decl.func_type;
+        short_sym->loc = new_fn->loc;
+        short_sym->is_global = true;
+        short_sym->mangled_name = main_sym ? main_sym->mangled_name : canon_name;
+        short_sym->ast_decl = new_fn;
+        add_symbol(s->global_scope, short_sym);
+    }
+
+    return main_sym;
 }
 
 static Field *find_field(Type *cls, const char *field_name) {
@@ -746,6 +1226,8 @@ static const char *get_type_mangling_code(Arena *arena, Type *t) {
             return arena_strdup(arena, clean);
         }
         case TYPE_FUNC: return "F";
+        case TYPE_MEMBER_PTR: return "M";
+        case TYPE_MEMBER_FUNC_PTR: return "MF";
     }
     return "x";
 }
@@ -953,7 +1435,11 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
             if (sym) {
                 sym->is_used = true;
                 expr->var_ref.sym = sym;
-                expr->type = sym->type;
+                if (sym->kind == SYM_FUNC) {
+                    expr->type = type_ptr(s->arena, sym->type);
+                } else {
+                    expr->type = sym->type;
+                }
                 break;
             }
 
@@ -1127,16 +1613,65 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
         }
 
         case AST_UNARY: {
+            if (expr->unary.op == TOK_AMP && expr->unary.operand &&
+                expr->unary.operand->kind == AST_VAR_REF && expr->unary.operand->var_ref.scope_prefix != NULL) {
+                const char *cls_name = expr->unary.operand->var_ref.scope_prefix;
+                const char *mem_name = expr->unary.operand->var_ref.name;
+                Symbol *csym = find_class_symbol(s, cls_name);
+                if (csym && csym->type && csym->type->kind == TYPE_CLASS) {
+                    Field *f = find_field(csym->type, mem_name);
+                    if (f) {
+                        expr->kind = AST_LIT_INT;
+                        expr->int_val = f->offset;
+                        expr->type = type_member_ptr(s->arena, csym->type, f->type);
+                        break;
+                    }
+                    Symbol *msym = find_method_overload(s->global_scope, cls_name, mem_name, -1);
+                    if (!msym) {
+                        for (Scope *sc = s->global_scope; sc != NULL; sc = sc->parent) {
+                            for (Symbol *sym = sc->symbols; sym != NULL; sym = sym->next) {
+                                if (sym->kind == SYM_FUNC && sym->name && strcmp(sym->name, mem_name) == 0) {
+                                    if (sym->ast_decl && sym->ast_decl->func_decl.class_owner &&
+                                        match_class_names(sym->ast_decl->func_decl.class_owner, cls_name)) {
+                                        msym = sym;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (msym) break;
+                        }
+                    }
+                    if (msym) {
+                        expr->kind = AST_VAR_REF;
+                        expr->var_ref.sym = msym;
+                        expr->var_ref.name = msym->name;
+                        expr->var_ref.scope_prefix = NULL;
+                        expr->type = type_member_func_ptr(s->arena, csym->type, msym->type);
+                        break;
+                    }
+                }
+            }
+
             analyze_expr(s, expr->unary.operand);
             Type *op_t = expr->unary.operand ? expr->unary.operand->type : g_type_int;
 
             if (expr->unary.op == TOK_AMP) {
                 /* Address-of: &x -> Type* */
-                expr->type = type_ptr(s->arena, op_t);
+                if (op_t && op_t->kind == TYPE_PTR && op_t->ptr.base && op_t->ptr.base->kind == TYPE_FUNC) {
+                    expr->type = op_t;
+                } else if (op_t && op_t->kind == TYPE_FUNC) {
+                    expr->type = type_ptr(s->arena, op_t);
+                } else {
+                    expr->type = type_ptr(s->arena, op_t);
+                }
             } else if (expr->unary.op == TOK_STAR) {
                 /* Dereference: *p -> Type */
                 if (op_t && (op_t->kind == TYPE_PTR || op_t->kind == TYPE_REF)) {
-                    expr->type = op_t->ptr.base;
+                    if (op_t->ptr.base && op_t->ptr.base->kind == TYPE_FUNC) {
+                        expr->type = op_t;
+                    } else {
+                        expr->type = op_t->ptr.base;
+                    }
                 } else if (op_t && op_t->kind == TYPE_ARRAY) {
                     expr->type = op_t->array.base;
                 } else {
@@ -1226,6 +1761,41 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
                 if (!msym) {
                     msym = find_method_overload(s->global_scope, cls_type->name, expr->call.name, expr->call.arg_count);
                 }
+                if (!msym && cls_type->name) {
+                    /* Check if this is a constructor call on a subobject/member: obj.ClassName(...) */
+                    const char *short_cls = strrchr(cls_type->name, ':');
+                    short_cls = short_cls ? short_cls + 1 : cls_type->name;
+                    char base_cls[128];
+                    const char *sep = strstr(short_cls, "__");
+                    if (sep) {
+                        size_t blen = (size_t)(sep - short_cls);
+                        if (blen < sizeof(base_cls)) {
+                            memcpy(base_cls, short_cls, blen);
+                            base_cls[blen] = '\0';
+                        } else {
+                            base_cls[0] = '\0';
+                        }
+                    } else {
+                        snprintf(base_cls, sizeof(base_cls), "%s", short_cls);
+                    }
+
+                    msym = find_method_overload_typed(s->global_scope, cls_type->name, cls_type->name, expr->call.args, expr->call.arg_count);
+                    if (!msym && base_cls[0]) {
+                        msym = find_method_overload_typed(s->global_scope, cls_type->name, base_cls, expr->call.args, expr->call.arg_count);
+                    }
+                    if (!msym && short_cls) {
+                        msym = find_method_overload_typed(s->global_scope, cls_type->name, short_cls, expr->call.args, expr->call.arg_count);
+                    }
+                    if (!msym) {
+                        msym = find_method_overload(s->global_scope, cls_type->name, cls_type->name, expr->call.arg_count);
+                    }
+                    if (!msym && base_cls[0]) {
+                        msym = find_method_overload(s->global_scope, cls_type->name, base_cls, expr->call.arg_count);
+                    }
+                    if (msym) {
+                        expr->call.name = msym->name;
+                    }
+                }
                 if (msym) {
                     expr->call.mangled_name = msym->mangled_name;
                     expr->call.callee_sym = msym;
@@ -1235,26 +1805,51 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
                         expr->type = g_type_int;
                     }
                 } else {
-                    TypeParam *actual_params = NULL;
-                    TypeParam **tail = &actual_params;
-                    for (int i = 0; i < expr->call.arg_count; i++) {
-                        TypeParam *tp = arena_alloc_zero(s->arena, sizeof(TypeParam));
-                        tp->type = expr->call.args[i] ? expr->call.args[i]->type : g_type_int;
-                        *tail = tp;
-                        tail = &tp->next;
+                    Field *f = find_field(cls_type, expr->call.name);
+                    if (f && f->type && (f->type->kind == TYPE_PTR || f->type->kind == TYPE_FUNC)) {
+                        /* Member is a function pointer field: obj.callback(args) */
+                        ASTNode *memb = ast_new(s->arena, AST_MEMBER, expr->loc);
+                        memb->member.object = expr->call.object;
+                        memb->member.member_name = expr->call.name;
+                        memb->member.is_arrow = expr->call.is_arrow;
+                        memb->member.field = f;
+                        memb->type = f->type;
+
+                        expr->call.is_method = false;
+                        expr->call.callee = memb;
+                        expr->call.name = NULL;
+                        expr->call.mangled_name = NULL;
+
+                        Type *func_t = (f->type->kind == TYPE_PTR && f->type->ptr.base) ? f->type->ptr.base : f->type;
+                        expr->type = (func_t && func_t->kind == TYPE_FUNC && func_t->func.return_type) ? func_t->func.return_type : g_type_void;
+                    } else {
+                        TypeParam *actual_params = NULL;
+                        TypeParam **tail = &actual_params;
+                        for (int i = 0; i < expr->call.arg_count; i++) {
+                            TypeParam *tp = arena_alloc_zero(s->arena, sizeof(TypeParam));
+                            tp->type = expr->call.args[i] ? expr->call.args[i]->type : g_type_int;
+                            *tail = tp;
+                            tail = &tp->next;
+                        }
+                        const char *owner = (cls_type->cls.class_name && strstr(cls_type->cls.class_name, "::")) ? cls_type->cls.class_name : cls_type->name;
+                        const char *mangled = mangle_function_name(s->arena, owner, expr->call.name, actual_params, false, false);
+                        expr->call.mangled_name = mangled;
+                        expr->type = g_type_int;
                     }
-                    const char *owner = (cls_type->cls.class_name && strstr(cls_type->cls.class_name, "::")) ? cls_type->cls.class_name : cls_type->name;
-                    const char *mangled = mangle_function_name(s->arena, owner, expr->call.name, actual_params, false, false);
-                    expr->call.mangled_name = mangled;
-                    expr->type = g_type_int;
                 }
             } else {
-                /* Free function call or scoped function call */
+                /* Free function call, scoped function call, or indirect function pointer call */
                 Symbol *sym = NULL;
-                if (expr->call.scope_prefix) {
-                    sym = find_scoped_function_overload(s->global_scope, expr->call.scope_prefix, expr->call.name, expr->call.arg_count);
-                } else {
-                    sym = find_function_overload_typed(s->current_scope, expr->call.name, expr->call.args, expr->call.arg_count);
+                if (expr->call.name != NULL) {
+                    if (expr->call.scope_prefix) {
+                        sym = find_scoped_function_overload(s->global_scope, expr->call.scope_prefix, expr->call.name, expr->call.arg_count);
+                    } else {
+                        sym = find_function_overload_typed(s->current_scope, expr->call.name, expr->call.args, expr->call.arg_count);
+                    }
+                }
+
+                if (!sym && expr->call.name != NULL) {
+                    sym = try_instantiate_func_template(s, expr);
                 }
 
                 if (sym) {
@@ -1265,14 +1860,76 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
                     } else {
                         expr->type = g_type_int;
                     }
-                } else if (expr->call.scope_prefix) {
-                    const char *mangled = mangle_function_name(s->arena, expr->call.scope_prefix, expr->call.name, NULL, false, false);
-                    expr->call.mangled_name = mangled;
-                    expr->type = g_type_int;
-                } else {
-                    /* Unresolved: assume int return type */
-                    expr->call.mangled_name = str_intern(expr->call.name);
-                    expr->type = g_type_int;
+                } else if (expr->call.callee != NULL) {
+                    /* Check for indirect function pointer call: fp(args), (*fp)(args), table[i](args) */
+                    analyze_expr(s, expr->call.callee);
+                    Type *callee_t = expr->call.callee->type;
+                    if (callee_t != NULL && callee_t->kind == TYPE_MEMBER_FUNC_PTR &&
+                        expr->call.callee->kind == AST_MEMBER_PTR_ACCESS) {
+                        expr->call.is_method = true;
+                        expr->call.object = expr->call.callee->member_ptr_access.object;
+                        expr->call.is_arrow = expr->call.callee->member_ptr_access.is_arrow;
+                        expr->call.callee = expr->call.callee->member_ptr_access.member_ptr;
+                        expr->call.name = NULL;
+                        expr->call.mangled_name = NULL;
+                        Type *fn_t = callee_t->member_func_ptr.func_type;
+                        expr->type = (fn_t && fn_t->kind == TYPE_FUNC && fn_t->func.return_type) ? fn_t->func.return_type : g_type_int;
+                    } else {
+                        Type *func_t = NULL;
+                        if (callee_t != NULL) {
+                            if (callee_t->kind == TYPE_PTR && callee_t->ptr.base && callee_t->ptr.base->kind == TYPE_FUNC) {
+                                func_t = callee_t->ptr.base;
+                            } else if (callee_t->kind == TYPE_FUNC) {
+                                func_t = callee_t;
+                            }
+                        }
+
+                        if (func_t != NULL) {
+                            expr->call.mangled_name = NULL;
+                            expr->type = func_t->func.return_type ? func_t->func.return_type : g_type_void;
+                        } else if (expr->call.scope_prefix && expr->call.name) {
+                            const char *mangled = mangle_function_name(s->arena, expr->call.scope_prefix, expr->call.name, NULL, false, false);
+                            expr->call.mangled_name = mangled;
+                            expr->type = g_type_int;
+                        } else {
+                            expr->type = g_type_int;
+                        }
+                    }
+                } else if (expr->call.name != NULL) {
+                    /* Check for temporary object construction: ClassName(args) */
+                    Symbol *csym = find_class_symbol(s, expr->call.name);
+                    if (!csym && expr->call.scope_prefix) {
+                        char qname[256];
+                        snprintf(qname, sizeof(qname), "%s::%s", expr->call.scope_prefix, expr->call.name);
+                        csym = find_class_symbol(s, qname);
+                    }
+                    if (csym && csym->kind == SYM_CLASS) {
+                        Type *ct = resolve_type(s, csym->type);
+                        if (ct) {
+                            TypeParam *cparams_head = NULL;
+                            TypeParam **cparams_tail = &cparams_head;
+                            for (int i = 0; i < expr->call.arg_count; i++) {
+                                TypeParam *tp = arena_alloc_zero(s->arena, sizeof(TypeParam));
+                                tp->type = expr->call.args[i] ? expr->call.args[i]->type : g_type_int;
+                                *cparams_tail = tp;
+                                cparams_tail = &tp->next;
+                            }
+                            const char *owner = (ct->cls.class_name && strstr(ct->cls.class_name, "::")) ? ct->cls.class_name : ct->name;
+                            const char *ctor_name = mangle_function_name(s->arena, owner, owner, cparams_head, true, false);
+                            expr->call.mangled_name = ctor_name;
+                            expr->type = ct;
+                            expr->call.callee_sym = csym;
+                        } else {
+                            expr->type = g_type_int;
+                        }
+                    } else if (expr->call.scope_prefix && expr->call.name) {
+                        const char *mangled = mangle_function_name(s->arena, expr->call.scope_prefix, expr->call.name, NULL, false, false);
+                        expr->call.mangled_name = mangled;
+                        expr->type = g_type_int;
+                    } else {
+                        expr->call.mangled_name = str_intern(expr->call.name);
+                        expr->type = g_type_int;
+                    }
                 }
             }
             break;
@@ -1324,6 +1981,44 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
             break;
         }
 
+        case AST_MEMBER_PTR_ACCESS: {
+            analyze_expr(s, expr->member_ptr_access.object);
+            analyze_expr(s, expr->member_ptr_access.member_ptr);
+
+            Type *obj_t = expr->member_ptr_access.object ? expr->member_ptr_access.object->type : NULL;
+            Type *cls_type = NULL;
+            if (obj_t) {
+                if (expr->member_ptr_access.is_arrow) {
+                    if (obj_t->kind == TYPE_PTR || obj_t->kind == TYPE_REF) {
+                        cls_type = resolve_type(s, obj_t->ptr.base);
+                    }
+                } else {
+                    if (obj_t->kind == TYPE_CLASS) {
+                        cls_type = resolve_type(s, obj_t);
+                    } else if (obj_t->kind == TYPE_REF && obj_t->ref.base->kind == TYPE_CLASS) {
+                        cls_type = resolve_type(s, obj_t->ref.base);
+                    }
+                }
+            }
+
+            if (!cls_type || cls_type->kind != TYPE_CLASS) {
+                diag_report(DIAG_ERROR, expr->loc, "left-hand operand of .* or ->* must be a class or class pointer");
+            }
+
+            Type *mpt = expr->member_ptr_access.member_ptr ? expr->member_ptr_access.member_ptr->type : NULL;
+            if (mpt) mpt = resolve_type(s, mpt);
+
+            if (mpt && mpt->kind == TYPE_MEMBER_PTR) {
+                expr->type = mpt->member_ptr.member_type;
+            } else if (mpt && mpt->kind == TYPE_MEMBER_FUNC_PTR) {
+                expr->type = mpt;
+            } else {
+                diag_report(DIAG_ERROR, expr->loc, "pointer to member required on right of .* or ->*");
+                expr->type = g_type_int;
+            }
+            break;
+        }
+
         case AST_NEW: {
             expr->new_expr.target_type = resolve_type(s, expr->new_expr.target_type);
             Type *t = expr->new_expr.target_type;
@@ -1331,12 +2026,54 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
                 analyze_expr(s, expr->new_expr.args[i]);
             }
             expr->type = type_ptr(s->arena, t);
+
+            if (t && t->kind == TYPE_CLASS) {
+                const char *owner = (t->cls.class_name && strstr(t->cls.class_name, "::")) ? t->cls.class_name : t->name;
+                const char *short_owner = strrchr(owner, ':');
+                short_owner = short_owner ? short_owner + 1 : owner;
+                char base_owner[128];
+                const char *sep = strstr(short_owner, "__");
+                if (sep) {
+                    size_t blen = (size_t)(sep - short_owner);
+                    if (blen < sizeof(base_owner)) {
+                        memcpy(base_owner, short_owner, blen);
+                        base_owner[blen] = '\0';
+                    } else base_owner[0] = '\0';
+                } else snprintf(base_owner, sizeof(base_owner), "%s", short_owner);
+
+                Symbol *msym = find_method_overload_typed(s->global_scope, owner, owner, expr->new_expr.args, expr->new_expr.arg_count);
+                if (!msym && base_owner[0]) {
+                    msym = find_method_overload_typed(s->global_scope, owner, base_owner, expr->new_expr.args, expr->new_expr.arg_count);
+                }
+                if (!msym && short_owner) {
+                    msym = find_method_overload_typed(s->global_scope, owner, short_owner, expr->new_expr.args, expr->new_expr.arg_count);
+                }
+                if (!msym) {
+                    msym = find_method_overload(s->global_scope, owner, owner, expr->new_expr.arg_count);
+                }
+                if (!msym && base_owner[0]) {
+                    msym = find_method_overload(s->global_scope, owner, base_owner, expr->new_expr.arg_count);
+                }
+                if (msym) {
+                    expr->new_expr.ctor_mangled_name = msym->mangled_name;
+                }
+            }
             break;
         }
 
         case AST_DELETE: {
             analyze_expr(s, expr->delete_expr.target);
             expr->type = g_type_void;
+            break;
+        }
+
+        case AST_PACK_EXPANSION: {
+            if (expr->pack_expansion.expr) {
+                analyze_expr(s, expr->pack_expansion.expr);
+                expr->type = expr->pack_expansion.expr->type;
+            } else {
+                expr->type = g_type_void;
+            }
             break;
         }
 
@@ -1424,7 +2161,9 @@ static void analyze_stmt(Sema *s, ASTNode *stmt) {
                 s->current_scope->using_namespaces[s->current_scope->using_ns_count++] = stmt->stmt_expr.expr->var_ref.name;
                 break;
             }
-            analyze_expr(s, stmt->stmt_expr.expr);
+            if (stmt->stmt_expr.expr) {
+                analyze_expr(s, stmt->stmt_expr.expr);
+            }
             break;
 
         case AST_STMT_BLOCK: {
@@ -1750,12 +2489,32 @@ static void sema_register_classes(Sema *s, ASTNode *decl, const char *ns_prefix)
             }
             ct->name = cname;
             ct->param_count = decl->template_decl.param_count > 0 ? decl->template_decl.param_count : 1;
+            ct->is_variadic = decl->template_decl.is_variadic;
             for (int i = 0; i < ct->param_count; i++) {
                 ct->param_names[i] = decl->template_decl.param_names[i] ? decl->template_decl.param_names[i] : decl->template_decl.param_name;
+                ct->is_pack[i] = decl->template_decl.is_pack[i];
             }
             ct->class_decl = decl->template_decl.decl;
             ct->next = s_templates;
             s_templates = ct;
+        } else if (decl->template_decl.decl && decl->template_decl.decl->kind == AST_DECL_FUNC) {
+            FuncTemplate *ft = arena_alloc_zero(s->arena, sizeof(FuncTemplate));
+            const char *fname = decl->template_decl.decl->func_decl.name;
+            if (ns_prefix && strstr(fname, "::") == NULL) {
+                char buf[256];
+                snprintf(buf, sizeof(buf), "%s::%s", ns_prefix, fname);
+                fname = arena_strdup(s->arena, buf);
+            }
+            ft->name = fname;
+            ft->param_count = decl->template_decl.param_count > 0 ? decl->template_decl.param_count : 1;
+            ft->is_variadic = decl->template_decl.is_variadic;
+            for (int i = 0; i < ft->param_count; i++) {
+                ft->param_names[i] = decl->template_decl.param_names[i] ? decl->template_decl.param_names[i] : decl->template_decl.param_name;
+                ft->is_pack[i] = decl->template_decl.is_pack[i];
+            }
+            ft->func_decl = decl->template_decl.decl;
+            ft->next = s_func_templates;
+            s_func_templates = ft;
         }
     } else if (decl->kind == AST_DECL_NAMESPACE) {
         const char *new_prefix = decl->ns_decl.name;
@@ -1830,6 +2589,10 @@ static void sema_analyze_decls(Sema *s, ASTNode *decl, const char *ns_prefix) {
             ssym->mangled_name = full_name;
             add_symbol(s->global_scope, ssym);
         }
+
+        if (decl->var_decl.init) {
+            analyze_expr(s, decl->var_decl.init);
+        }
     }
 }
 
@@ -1838,6 +2601,7 @@ bool sema_analyze(Sema *s, ASTNode *program) {
 
     s_current_program = program;
     s_templates = NULL;
+    s_func_templates = NULL;
 
     /* Pass 1: Register class, struct, typedef, and template definitions */
     for (int i = 0; i < program->program.count; i++) {

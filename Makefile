@@ -70,6 +70,14 @@ test: $(TARGET)
 	@tests/14_templates.out >/dev/null && echo "  [PASS] 14_templates"
 	@$(TARGET) tests/15_std_library.cpp -o tests/15_std_library.out
 	@tests/15_std_library.out >/dev/null && echo "  [PASS] 15_std_library"
+	@$(TARGET) tests/16_function_pointers.cpp -o tests/16_function_pointers.out
+	@tests/16_function_pointers.out >/dev/null && echo "  [PASS] 16_function_pointers"
+	@$(TARGET) tests/17_pointers_to_members.cpp -o tests/17_pointers_to_members.out
+	@tests/17_pointers_to_members.out >/dev/null && echo "  [PASS] 17_pointers_to_members"
+	@$(TARGET) tests/18_macros.cpp -o tests/18_macros.out
+	@tests/18_macros.out >/dev/null && echo "  [PASS] 18_macros"
+	@$(TARGET) tests/19_variadic_templates.cpp -o tests/19_variadic_templates.out
+	@tests/19_variadic_templates.out >/dev/null && echo "  [PASS] 19_variadic_templates"
 	@echo "All tests passed successfully!"
 
 benchmark: $(TARGET)

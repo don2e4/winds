@@ -355,9 +355,16 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                     emit_operand_to_reg(out, k_arg_regs_64[i], inst->call_args[i], ra, local_stack);
                 }
 
-                /* Clear %al for variadic function calls */
-                fprintf(out, "\txorl\t%%eax, %%eax\n");
-                fprintf(out, "\tcall\t%s@PLT\n", inst->src1.label);
+                if (inst->src1.label != NULL) {
+                    /* Clear %al for variadic function calls */
+                    fprintf(out, "\txorl\t%%eax, %%eax\n");
+                    fprintf(out, "\tcall\t%s@PLT\n", inst->src1.label);
+                } else {
+                    emit_operand_to_reg(out, "%r11", inst->src1, ra, local_stack);
+                    /* Clear %al for variadic function calls */
+                    fprintf(out, "\txorl\t%%eax, %%eax\n");
+                    fprintf(out, "\tcall\t*%%r11\n");
+                }
 
                 if (stack_arg_space > 0) {
                     fprintf(out, "\taddq\t$%d, %%rsp\n", stack_arg_space);

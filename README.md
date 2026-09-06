@@ -12,9 +12,9 @@
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/license-mit-7aa2f7.svg" alt="license" /></a>
-  <a href="#benchmarks"><img src="https://img.shields.io/badge/compile_time-0.36_ms-9ece6a.svg" alt="speed" /></a>
-  <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-567_kb-e0af68.svg" alt="size" /></a>
-  <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-15_passing-9ece6a.svg" alt="tests" /></a>
+  <a href="#benchmarks"><img src="https://img.shields.io/badge/compile_time-0.47_ms-9ece6a.svg" alt="speed" /></a>
+  <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-737_kb-e0af68.svg" alt="size" /></a>
+  <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-19_passing-9ece6a.svg" alt="tests" /></a>
 </p>
 
 ---
@@ -50,8 +50,8 @@ benchmarks measured on x86_64 linux across 20 iterations:
 
 | metric | clang++ (llvm 22.1) | winds | advantage |
 |---|:---|:---|:---|
-| **frontend + codegen (`-s`)** | `11.91 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `0.36 ms` &nbsp; ▰ | **~33x faster** |
-| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `567 kb` &nbsp; ▰ | **~354x lighter** |
+| **frontend + codegen (`-s`)** | `11.80 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `0.47 ms` &nbsp; ▰ | **~25x faster** |
+| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `737 kb` &nbsp; ▰ | **~272x lighter** |
 | **runtime dependencies** | libllvm, libclang-cpp, libc++ | glibc only | **100% self-contained** |
 | **memory teardown** | recursive reference counting | contiguous bump arena | **instant constant-time exit** |
 
@@ -70,7 +70,7 @@ modern compilers often feel sluggish because they carry decades of legacy interm
 
 - **bump arena allocation**: all abstract syntax tree nodes, symbol entries, and intermediate instructions live in contiguous 128 kb blocks. memory allocations take a single pointer bump with zero lock contention, and process cleanup takes one single free call.
 - **linear scan register allocator**: instead of costly graph coloring algorithms with complex spill-reloading passes, winds runs a fast linear scan over live intervals with loop extension and automatic callee-saved register tracking.
-- **zero llvm dependencies**: no massive shared libraries to load into memory on each invocation. the entire compiler binary is only 567 kb.
+- **zero llvm dependencies**: no massive shared libraries to load into memory on each invocation. the entire compiler binary is only 737 kb.
 - **direct native code emission**: the intermediate representation lowers straight to system v amd64 assembly without intermediate serialization steps.
 
 ## compilation pipeline
@@ -182,11 +182,36 @@ explore the underlying compiler components by expanding the sections below:
 <summary><strong>templates & bespoke standard library</strong></summary>
 
 - on-demand template class monomorphization (`template <typename t> class name { ... };`)
+- variadic templates and parameter pack expansion (`template <typename... args>`)
+- recursive template monomorphization and pack unrolling
+- standard `<tuple>` (`std::tuple`, `std::make_tuple`) with contiguous stack layout
 - self-contained `<iostream>` with stream chaining (`std::cout << val << std::endl;`)
 - heap-managed `<string>` with dynamic resizing, concatenation, and streaming
 - dynamic `<vector<t>>` container with `push_back`, `pop_back`, and array indexing
 - generic `<utility>` (`std::pair`, `std::make_pair`, `std::swap`) and `<algorithm>` (`std::min`, `std::max`, `std::sort`)
 - zero external compiler runtime dependencies
+
+</details>
+
+<details>
+<summary><strong>function pointers & pointers to members</strong></summary>
+
+- first-class function pointer declarations (`ret (*fp)(args)`) and indirect calls
+- function pointer arrays, lookup tables, and callback dispatch architectures
+- pointers to class data members (`type class::*ptr`) and member dereference operators (`.*`, `->*`)
+- pointers to member functions (`ret (class::*mfp)(args)`) and indirect method invocation
+
+</details>
+
+<details>
+<summary><strong>preprocessor & macro expansion</strong></summary>
+
+- parameterized macros (`#define fn(x, y) ...`)
+- macro argument stringification (`#param`)
+- token pasting and concatenation (`##`)
+- multiline macro continuation via backslash (`\`)
+- macro undefinition via `#undef`
+- preprocessor conditional branches (`#if`, `#elif`, `#else`, `#endif`, `#ifdef`, `#ifndef`)
 
 </details>
 
@@ -310,7 +335,7 @@ ctest --test-dir build --output-on-failure
 
 ### test suites
 
-winds includes 15 automated test suites covering syntax, semantics, standard library, and code generation:
+winds includes 19 automated test suites covering syntax, semantics, standard library, and code generation:
 
 - `01_basics.cpp` &mdash; variables, arithmetic precedence, loops, and branches
 - `02_functions.cpp` &mdash; function overloading, pass-by-reference, and recursion
@@ -327,12 +352,16 @@ winds includes 15 automated test suites covering syntax, semantics, standard lib
 - `13_typedef.cpp` &mdash; type aliases via `typedef` and `using`
 - `14_templates.cpp` &mdash; template class monomorphization (`box<t>`, `pair<t1, t2>`)
 - `15_std_library.cpp` &mdash; self-contained standard library containers and streams
+- `16_function_pointers.cpp` &mdash; function pointers, indirect calls, and callback dispatch tables
+- `17_pointers_to_members.cpp` &mdash; pointers to data members and member functions (`.*`, `->*`)
+- `18_macros.cpp` &mdash; parameterized macros, stringification (`#`), token pasting (`##`), `#undef`, `#if`/`#elif`
+- `19_variadic_templates.cpp` &mdash; variadic templates, parameter packs, recursive monomorphization, and standard `<tuple>`
 
 ## roadmap
 
 - [x] **phase 1**: script execution mode (`-run`), shebang support, makefile dependency tracking (`-mmd`, `-mp`, `-mf`), warning controls (`-wall`, `-wextra`, `-werror`), colored diagnostics
 - [x] **phase 2**: operator overloading, type aliases (`typedef`, `using`), template class monomorphization, 12 self-contained standard library headers (`<iostream>`, `<string>`, `<vector>`, etc.)
-- [ ] **phase 3**: pointers to members, function pointers, variadic templates, and preprocessor macro expansions
+- [x] **phase 3**: function pointers, pointers to members, parameterized preprocessor macros, variadic templates and standard tuple
 
 ## license
 

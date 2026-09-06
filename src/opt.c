@@ -338,8 +338,15 @@ bool opt_copy_propagation(IRFunction *fn, Arena *arena) {
             }
         }
 
-        /* Rewrite call_args */
+        /* Rewrite call_args and indirect target */
         if (inst->op == IR_CALL) {
+            if (inst->src1.label == NULL && inst->src1.vreg > 0 && inst->src1.vreg < max_vreg) {
+                int root = find_copy_root(copy_map, inst->src1.vreg);
+                if (root > 0 && root != inst->src1.vreg) {
+                    inst->src1.vreg = root;
+                    changed = true;
+                }
+            }
             for (int i = 0; i < inst->call_arg_count; i++) {
                 int r = inst->call_args[i].vreg;
                 if (r > 0 && r < max_vreg) {
@@ -1018,6 +1025,9 @@ bool opt_dead_code_elimination(IRFunction *fn, Arena *arena) {
             if (d > 0 && d < max_vreg) use_count[d]++;
         }
         if (inst->op == IR_CALL) {
+            if (inst->src1.label == NULL && inst->src1.vreg > 0 && inst->src1.vreg < max_vreg) {
+                use_count[inst->src1.vreg]++;
+            }
             for (int i = 0; i < inst->call_arg_count; i++) {
                 int r = inst->call_args[i].vreg;
                 if (r > 0 && r < max_vreg) use_count[r]++;

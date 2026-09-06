@@ -56,6 +56,10 @@ if(BUILD_TESTING)
         13_typedef
         14_templates
         15_std_library
+        16_function_pointers
+        17_pointers_to_members
+        18_macros
+        19_variadic_templates
     )
 
     foreach(TC ${TEST_CASES})

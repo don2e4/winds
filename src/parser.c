@@ -7,6 +7,8 @@ static ASTNode *parse_statement(Parser *p);
 static ASTNode *parse_expression(Parser *p);
 static ASTNode *parse_assignment(Parser *p);
 static Type *parse_type(Parser *p);
+static bool try_parse_fn_ptr_declarator(Parser *p, Type *ret_type, const char **out_name, Type **out_type);
+static bool try_parse_member_ptr_declarator(Parser *p, Type *member_type, const char **out_name, Type **out_type);
 
 static void advance(Parser *p) {
     p->current = p->peek;
@@ -106,7 +108,8 @@ static bool is_declaration_starting(Parser *p) {
         while (p->current.kind == TOK_STAR || p->current.kind == TOK_AMP) {
             advance(p);
         }
-        bool is_decl = (p->current.kind == TOK_IDENT || p->current.kind == TOK_KW_OPERATOR);
+        bool is_decl = (p->current.kind == TOK_IDENT || p->current.kind == TOK_KW_OPERATOR ||
+                        (p->current.kind == TOK_LPAREN && p->peek.kind == TOK_STAR));
         *p = saved;
         return is_decl;
     }
@@ -148,6 +151,230 @@ static bool is_sizeof_type(Parser *p) {
     return false;
 }
 
+static bool try_parse_member_ptr_declarator(Parser *p, Type *member_type, const char **out_name, Type **out_type) {
+    if (p->current.kind != TOK_IDENT) {
+        return false;
+    }
+    Parser saved = *p;
+
+    char cls_name[256];
+    cls_name[0] = '\0';
+    size_t written = 0;
+
+    const char *id = p->current.str_val;
+    advance(p);
+    written += snprintf(cls_name + written, sizeof(cls_name) - written, "%s", id);
+
+    bool found_member_ptr = false;
+    while (check(p, TOK_COLON_COLON)) {
+        advance(p); /* skip '::' */
+        if (check(p, TOK_STAR)) {
+            advance(p); /* skip '*' */
+            found_member_ptr = true;
+            break;
+        }
+        if (check(p, TOK_IDENT)) {
+            written += snprintf(cls_name + written, sizeof(cls_name) - written, "::%s", p->current.str_val);
+            advance(p);
+        } else {
+            break;
+        }
+    }
+
+    if (!found_member_ptr) {
+        *p = saved;
+        return false;
+    }
+
+    const char *name = NULL;
+    bool is_array = false;
+    size_t arr_size = 0;
+
+    if (check(p, TOK_IDENT)) {
+        name = p->current.str_val;
+        advance(p);
+
+        if (match(p, TOK_LBRACKET)) {
+            if (check(p, TOK_INT_LIT)) {
+                arr_size = (size_t)p->current.int_val;
+                advance(p);
+            }
+            if (!match(p, TOK_RBRACKET)) {
+                *p = saved;
+                return false;
+            }
+            is_array = true;
+        }
+    }
+
+    Type *cls_t = type_new(p->arena, TYPE_CLASS);
+    cls_t->name = arena_strdup(p->arena, cls_name);
+    cls_t->size = 8;
+    cls_t->align = 8;
+
+    Type *res_t = type_member_ptr(p->arena, cls_t, member_type);
+    if (is_array) {
+        res_t = type_array(p->arena, res_t, arr_size);
+    }
+
+    if (out_name) *out_name = name;
+    if (out_type) *out_type = res_t;
+    return true;
+}
+
+static bool try_parse_fn_ptr_declarator(Parser *p, Type *ret_type, const char **out_name, Type **out_type) {
+    if (p->current.kind != TOK_LPAREN) {
+        return false;
+    }
+    Parser saved = *p;
+    advance(p); /* skip '(' */
+
+    bool is_member_fn = false;
+    char cls_name[256];
+    cls_name[0] = '\0';
+    size_t cls_written = 0;
+
+    int ptr_depth = 0;
+    if (check(p, TOK_STAR)) {
+        while (match(p, TOK_STAR)) {
+            ptr_depth++;
+        }
+    } else if (check(p, TOK_IDENT)) {
+        /* Member function pointer: (Class::*name)(args) or (Class::*)(args) */
+        const char *id = p->current.str_val;
+        advance(p);
+        cls_written += snprintf(cls_name + cls_written, sizeof(cls_name) - cls_written, "%s", id);
+
+        while (check(p, TOK_COLON_COLON)) {
+            advance(p); /* skip '::' */
+            if (check(p, TOK_STAR)) {
+                advance(p); /* skip '*' */
+                is_member_fn = true;
+                ptr_depth = 1;
+                break;
+            }
+            if (check(p, TOK_IDENT)) {
+                cls_written += snprintf(cls_name + cls_written, sizeof(cls_name) - cls_written, "::%s", p->current.str_val);
+                advance(p);
+            } else {
+                break;
+            }
+        }
+        if (!is_member_fn) {
+            *p = saved;
+            return false;
+        }
+    } else {
+        *p = saved;
+        return false;
+    }
+
+    if (ptr_depth == 0) {
+        *p = saved;
+        return false;
+    }
+
+    const char *name = NULL;
+    bool is_array = false;
+    size_t arr_size = 0;
+
+    if (p->current.kind == TOK_IDENT) {
+        name = p->current.str_val;
+        advance(p);
+
+        if (match(p, TOK_LBRACKET)) {
+            if (check(p, TOK_INT_LIT)) {
+                arr_size = (size_t)p->current.int_val;
+                advance(p);
+            }
+            if (!match(p, TOK_RBRACKET)) {
+                *p = saved;
+                return false;
+            }
+            is_array = true;
+        }
+    }
+
+    if (!match(p, TOK_RPAREN)) {
+        *p = saved;
+        return false;
+    }
+
+    if (!match(p, TOK_LPAREN)) {
+        *p = saved;
+        return false;
+    }
+
+    TypeParam *params = NULL;
+    TypeParam **tail = &params;
+    int param_count = 0;
+    bool is_varargs = false;
+
+    if (!check(p, TOK_RPAREN)) {
+        while (1) {
+            if (match(p, TOK_ELLIPSIS)) {
+                is_varargs = true;
+                break;
+            }
+
+            Type *param_t = parse_type(p);
+            const char *param_name = NULL;
+            Type *nested_fp = NULL;
+            if (try_parse_fn_ptr_declarator(p, param_t, &param_name, &nested_fp) ||
+                try_parse_member_ptr_declarator(p, param_t, &param_name, &nested_fp)) {
+                param_t = nested_fp;
+            } else if (check(p, TOK_IDENT)) {
+                param_name = p->current.str_val;
+                advance(p);
+            }
+
+            TypeParam *tp = arena_alloc_zero(p->arena, sizeof(TypeParam));
+            tp->type = param_t;
+            tp->name = param_name;
+            *tail = tp;
+            tail = &tp->next;
+            param_count++;
+
+            if (match(p, TOK_COMMA)) {
+                continue;
+            } else {
+                break;
+            }
+        }
+    }
+
+    if (!match(p, TOK_RPAREN)) {
+        *p = saved;
+        return false;
+    }
+
+    if (is_member_fn && match(p, TOK_KW_CONST)) {
+        /* optional const member function qualifier */
+    }
+
+    Type *fn_t = type_func(p->arena, ret_type, params, param_count, is_varargs);
+    Type *res_t = NULL;
+    if (is_member_fn) {
+        Type *cls_t = type_new(p->arena, TYPE_CLASS);
+        cls_t->name = arena_strdup(p->arena, cls_name);
+        cls_t->size = 8;
+        cls_t->align = 8;
+        res_t = type_member_func_ptr(p->arena, cls_t, fn_t);
+    } else {
+        res_t = type_ptr(p->arena, fn_t);
+        for (int i = 1; i < ptr_depth; i++) {
+            res_t = type_ptr(p->arena, res_t);
+        }
+    }
+    if (is_array) {
+        res_t = type_array(p->arena, res_t, arr_size);
+    }
+
+    if (out_name) *out_name = name;
+    if (out_type) *out_type = res_t;
+    return true;
+}
+
 static Type *parse_type(Parser *p) {
     SourceLoc loc = p->current.loc;
     bool is_const = false;
@@ -185,14 +412,24 @@ static Type *parse_type(Parser *p) {
             advance(p);
             char templ_name[256];
             int written = snprintf(templ_name, sizeof(templ_name), "%s__", name);
-            while (1) {
-                Type *arg = parse_type(p);
-                const char *arg_name = (arg && arg->name) ? arg->name : "type";
-                written += snprintf(templ_name + written, sizeof(templ_name) - written, "%s", arg_name);
-                if (match(p, TOK_COMMA)) {
-                    written += snprintf(templ_name + written, sizeof(templ_name) - written, "_");
-                } else {
-                    break;
+            if (!check(p, TOK_GREATER)) {
+                while (1) {
+                    if (check(p, TOK_INT_LIT)) {
+                        written += snprintf(templ_name + written, sizeof(templ_name) - written, "%ld", (long)p->current.int_val);
+                        advance(p);
+                    } else {
+                        Type *arg = parse_type(p);
+                        const char *arg_name = (arg && arg->name) ? arg->name : "type";
+                        written += snprintf(templ_name + written, sizeof(templ_name) - written, "%s", arg_name);
+                        if (match(p, TOK_ELLIPSIS)) {
+                            written += snprintf(templ_name + written, sizeof(templ_name) - written, "...");
+                        }
+                    }
+                    if (match(p, TOK_COMMA)) {
+                        written += snprintf(templ_name + written, sizeof(templ_name) - written, "_");
+                    } else {
+                        break;
+                    }
                 }
             }
             expect(p, TOK_GREATER, "'>' after template argument");
@@ -215,6 +452,34 @@ static Type *parse_type(Parser *p) {
         } else if (match(p, TOK_AMP)) {
             base = type_ref(p->arena, base);
             break; /* In C++, reference cannot be further referenced directly */
+        }
+    }
+
+    /* Check for unnamed member pointer type: base Class::* */
+    {
+        const char *name = NULL;
+        Type *mptr_t = NULL;
+        Parser saved = *p;
+        if (try_parse_member_ptr_declarator(p, base, &name, &mptr_t)) {
+            if (name == NULL) {
+                base = mptr_t;
+            } else {
+                *p = saved;
+            }
+        }
+    }
+
+    /* Check for unnamed function pointer or member function pointer: ret (*) (params) or ret (Class::*) (params) */
+    if (p->current.kind == TOK_LPAREN) {
+        const char *name = NULL;
+        Type *fp_t = NULL;
+        Parser saved = *p;
+        if (try_parse_fn_ptr_declarator(p, base, &name, &fp_t)) {
+            if (name == NULL) {
+                base = fp_t;
+            } else {
+                *p = saved;
+            }
         }
     }
 
@@ -281,11 +546,60 @@ static ASTNode *parse_primary(Parser *p) {
         const char *name = p->current.str_val;
         advance(p);
 
-        /* Check for scope resolution: Foo::Bar */
+        /* Check for scope resolution: Foo::Bar or Foo::Bar::Baz */
         const char *scope_prefix = NULL;
-        if (match(p, TOK_COLON_COLON)) {
-            scope_prefix = name;
-            name = expect(p, TOK_IDENT, "identifier after '::'").str_val;
+        if (check(p, TOK_COLON_COLON)) {
+            char prefix[256];
+            snprintf(prefix, sizeof(prefix), "%s", name);
+            while (match(p, TOK_COLON_COLON)) {
+                name = expect(p, TOK_IDENT, "identifier after '::'").str_val;
+                if (check(p, TOK_COLON_COLON)) {
+                    size_t plen = strlen(prefix);
+                    snprintf(prefix + plen, sizeof(prefix) - plen, "::%s", name);
+                }
+            }
+            scope_prefix = arena_strdup(p->arena, prefix);
+        }
+
+        /* Check for explicit template arguments in expression: Name<Arg1, Arg2> followed by '(' or '::' */
+        if (check(p, TOK_LESS)) {
+            Parser saved = *p;
+            advance(p);
+            int depth = 1;
+            while (depth > 0 && p->current.kind != TOK_EOF && p->current.kind != TOK_SEMICOLON) {
+                if (p->current.kind == TOK_LESS) depth++;
+                else if (p->current.kind == TOK_GREATER) depth--;
+                advance(p);
+            }
+            bool is_template = (depth == 0 && (p->current.kind == TOK_LPAREN || p->current.kind == TOK_COLON_COLON));
+            *p = saved;
+            if (is_template) {
+                advance(p);
+                char templ_name[256];
+                int written = snprintf(templ_name, sizeof(templ_name), "%s__", name);
+                if (!check(p, TOK_GREATER)) {
+                    while (1) {
+                        if (check(p, TOK_INT_LIT)) {
+                            written += snprintf(templ_name + written, sizeof(templ_name) - written, "%ld", (long)p->current.int_val);
+                            advance(p);
+                        } else {
+                            Type *arg = parse_type(p);
+                            const char *arg_name = (arg && arg->name) ? arg->name : "type";
+                            written += snprintf(templ_name + written, sizeof(templ_name) - written, "%s", arg_name);
+                            if (match(p, TOK_ELLIPSIS)) {
+                                written += snprintf(templ_name + written, sizeof(templ_name) - written, "...");
+                            }
+                        }
+                        if (match(p, TOK_COMMA)) {
+                            written += snprintf(templ_name + written, sizeof(templ_name) - written, "_");
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                expect(p, TOK_GREATER, "'>' after template arguments");
+                name = arena_strdup(p->arena, templ_name);
+            }
         }
 
         ASTNode *node = ast_new(p->arena, AST_VAR_REF, loc);
@@ -390,6 +704,12 @@ static ASTNode *parse_postfix(Parser *p) {
             un->unary.operand = expr;
             un->unary.is_prefix = false;
             expr = un;
+        }
+        /* Parameter pack expansion: expr... */
+        else if (match(p, TOK_ELLIPSIS)) {
+            ASTNode *pack = ast_new(p->arena, AST_PACK_EXPANSION, loc);
+            pack->pack_expansion.expr = expr;
+            expr = pack;
         } else {
             break;
         }
@@ -450,9 +770,20 @@ static ASTNode *parse_unary(Parser *p) {
         return node;
     }
 
-    /* sizeof(type) or sizeof(expr) */
+    /* sizeof(type), sizeof(expr), or sizeof...(pack) */
     if (match(p, TOK_KW_SIZEOF)) {
         SourceLoc sloc = p->current.loc;
+        if (match(p, TOK_ELLIPSIS)) {
+            expect(p, TOK_LPAREN, "'(' after sizeof...");
+            Token ptok = expect(p, TOK_IDENT, "parameter pack name in sizeof...");
+            expect(p, TOK_RPAREN, "')' after sizeof...");
+            ASTNode *vref = ast_new(p->arena, AST_VAR_REF, sloc);
+            vref->var_ref.name = ptok.str_val;
+            ASTNode *node = ast_new(p->arena, AST_SIZEOF, sloc);
+            node->sizeof_expr.target_expr = vref;
+            node->type = g_type_long;
+            return node;
+        }
         expect(p, TOK_LPAREN, "'(' after sizeof");
         if (is_sizeof_type(p) || is_declaration_starting(p)) {
             Type *t = parse_type(p);
@@ -477,6 +808,9 @@ static ASTNode *parse_unary(Parser *p) {
 /* Binary operator precedence climbing */
 static int get_binary_op_precedence(TokenKind kind) {
     switch (kind) {
+        case TOK_DOT_STAR:
+        case TOK_ARROW_STAR:
+            return 12;
         case TOK_STAR:
         case TOK_SLASH:
         case TOK_PERCENT:
@@ -523,11 +857,19 @@ static ASTNode *parse_binary_expr(Parser *p, int min_prec) {
 
         ASTNode *right = parse_binary_expr(p, prec + 1);
 
-        ASTNode *binary = ast_new(p->arena, AST_BINARY, loc);
-        binary->binary.op = op;
-        binary->binary.left = left;
-        binary->binary.right = right;
-        left = binary;
+        if (op == TOK_DOT_STAR || op == TOK_ARROW_STAR) {
+            ASTNode *access = ast_new(p->arena, AST_MEMBER_PTR_ACCESS, loc);
+            access->member_ptr_access.object = left;
+            access->member_ptr_access.member_ptr = right;
+            access->member_ptr_access.is_arrow = (op == TOK_ARROW_STAR);
+            left = access;
+        } else {
+            ASTNode *binary = ast_new(p->arena, AST_BINARY, loc);
+            binary->binary.op = op;
+            binary->binary.left = left;
+            binary->binary.right = right;
+            left = binary;
+        }
     }
 
     return left;
@@ -584,6 +926,10 @@ static ASTNode *parse_block(Parser *p) {
 
 static ASTNode *parse_statement(Parser *p) {
     SourceLoc loc = p->current.loc;
+
+    if (match(p, TOK_SEMICOLON)) {
+        return ast_new(p->arena, AST_STMT_EXPR, loc);
+    }
 
     if (check(p, TOK_LBRACE)) {
         return parse_block(p);
@@ -699,10 +1045,18 @@ static ASTNode *parse_statement(Parser *p) {
 
     if (match(p, TOK_KW_TYPEDEF)) {
         Type *aliased_type = parse_type(p);
-        Token name_tok = expect(p, TOK_IDENT, "name in typedef");
+        const char *name = NULL;
+        Type *fn_ptr_t = NULL;
+        if (try_parse_fn_ptr_declarator(p, aliased_type, &name, &fn_ptr_t) ||
+            try_parse_member_ptr_declarator(p, aliased_type, &name, &fn_ptr_t)) {
+            aliased_type = fn_ptr_t;
+        } else {
+            Token name_tok = expect(p, TOK_IDENT, "name in typedef");
+            name = name_tok.str_val;
+        }
         expect(p, TOK_SEMICOLON, "';' after typedef");
         ASTNode *td = ast_new(p->arena, AST_DECL_TYPEDEF, loc);
-        td->typedef_decl.name = name_tok.str_val;
+        td->typedef_decl.name = name;
         td->typedef_decl.aliased_type = aliased_type;
         return td;
     }
@@ -710,22 +1064,33 @@ static ASTNode *parse_statement(Parser *p) {
     /* Variable declaration inside statement: Type name [= init]; or Type name(args); */
     if (is_declaration_starting(p)) {
         Type *t = parse_type(p);
-        Token name_tok = expect(p, TOK_IDENT, "variable name");
-        if (match(p, TOK_LBRACKET)) {
-            size_t arr_size = 0;
-            if (check(p, TOK_INT_LIT)) {
-                arr_size = (size_t)p->current.int_val;
-                advance(p);
+        const char *var_name = NULL;
+        Type *fn_ptr_t = NULL;
+        bool is_fn_ptr = try_parse_fn_ptr_declarator(p, t, &var_name, &fn_ptr_t);
+        if (!is_fn_ptr) {
+            is_fn_ptr = try_parse_member_ptr_declarator(p, t, &var_name, &fn_ptr_t);
+        }
+        if (is_fn_ptr) {
+            t = fn_ptr_t;
+        } else {
+            Token name_tok = expect(p, TOK_IDENT, "variable name");
+            var_name = name_tok.str_val;
+            if (match(p, TOK_LBRACKET)) {
+                size_t arr_size = 0;
+                if (check(p, TOK_INT_LIT)) {
+                    arr_size = (size_t)p->current.int_val;
+                    advance(p);
+                }
+                expect(p, TOK_RBRACKET, "']' in array variable");
+                t = type_array(p->arena, t, arr_size);
             }
-            expect(p, TOK_RBRACKET, "']' in array variable");
-            t = type_array(p->arena, t, arr_size);
         }
         ASTNode *var = ast_new(p->arena, AST_STMT_VAR_DECL, loc);
         var->var_decl.var_type = t;
-        var->var_decl.name = name_tok.str_val;
+        var->var_decl.name = var_name;
 
         /* Check for constructor call: Point p(1, 2); */
-        if (match(p, TOK_LPAREN)) {
+        if (!is_fn_ptr && match(p, TOK_LPAREN)) {
             ASTNode **args = arena_alloc(p->arena, sizeof(ASTNode*) * 16);
             int arg_count = 0;
             if (!check(p, TOK_RPAREN)) {
@@ -769,11 +1134,23 @@ static int parse_param_list(Parser *p, ASTNode ***out_params, bool *out_varargs)
                 break;
             }
             Type *pt = parse_type(p);
+            bool is_pack = false;
+            if (match(p, TOK_ELLIPSIS)) {
+                is_pack = true;
+            }
             const char *pname = NULL;
-            if (check(p, TOK_IDENT)) {
+            Type *fn_ptr_t = NULL;
+            if (try_parse_fn_ptr_declarator(p, pt, &pname, &fn_ptr_t) ||
+                try_parse_member_ptr_declarator(p, pt, &pname, &fn_ptr_t)) {
+                pt = fn_ptr_t;
+            } else if (check(p, TOK_IDENT)) {
                 pname = p->current.str_val;
                 advance(p);
-            } else {
+            }
+            if (match(p, TOK_ELLIPSIS)) {
+                is_pack = true;
+            }
+            if (!pname) {
                 char auto_name[32];
                 snprintf(auto_name, sizeof(auto_name), "__arg%d", param_count);
                 pname = str_intern(auto_name);
@@ -781,6 +1158,7 @@ static int parse_param_list(Parser *p, ASTNode ***out_params, bool *out_varargs)
             ASTNode *param = ast_new(p->arena, AST_STMT_VAR_DECL, p->current.loc);
             param->var_decl.var_type = pt;
             param->var_decl.name = pname;
+            param->var_decl.is_pack = is_pack;
             params[param_count++] = param;
         } while (match(p, TOK_COMMA));
     }
@@ -838,6 +1216,32 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
         class_name = arena_strdup(p->arena, full_cls);
     }
 
+    if (match(p, TOK_SEMICOLON)) {
+        ASTNode *fwd = ast_new(p->arena, AST_DECL_CLASS, loc);
+        fwd->class_decl.name = class_name;
+        fwd->class_decl.fields = NULL;
+        fwd->class_decl.methods = NULL;
+        fwd->class_decl.method_count = 0;
+        return fwd;
+    }
+
+    if (match(p, TOK_LESS)) {
+        int depth = 1;
+        while (depth > 0 && !check(p, TOK_EOF) && !check(p, TOK_SEMICOLON)) {
+            if (match(p, TOK_LESS)) depth++;
+            else if (match(p, TOK_GREATER)) depth--;
+            else advance(p);
+        }
+        if (match(p, TOK_SEMICOLON)) {
+            ASTNode *fwd = ast_new(p->arena, AST_DECL_CLASS, loc);
+            fwd->class_decl.name = class_name;
+            fwd->class_decl.fields = NULL;
+            fwd->class_decl.methods = NULL;
+            fwd->class_decl.method_count = 0;
+            return fwd;
+        }
+    }
+
     expect(p, TOK_LBRACE, "'{' to begin class body");
 
     /* Default access: public for struct, private for class */
@@ -887,10 +1291,18 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
         if (match(p, TOK_KW_TYPEDEF)) {
             SourceLoc loc = p->current.loc;
             Type *aliased_type = parse_type(p);
-            Token name_tok = expect(p, TOK_IDENT, "name in typedef");
+            const char *name = NULL;
+            Type *fn_ptr_t = NULL;
+            if (try_parse_fn_ptr_declarator(p, aliased_type, &name, &fn_ptr_t) ||
+                try_parse_member_ptr_declarator(p, aliased_type, &name, &fn_ptr_t)) {
+                aliased_type = fn_ptr_t;
+            } else {
+                Token name_tok = expect(p, TOK_IDENT, "name in typedef");
+                name = name_tok.str_val;
+            }
             expect(p, TOK_SEMICOLON, "';' after typedef");
             ASTNode *td = ast_new(p->arena, AST_DECL_TYPEDEF, loc);
-            td->typedef_decl.name = name_tok.str_val;
+            td->typedef_decl.name = name;
             td->typedef_decl.aliased_type = aliased_type;
             methods[method_count++] = td;
             continue;
@@ -908,11 +1320,72 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
             bool is_va = false;
             int param_count = parse_param_list(p, &params, &is_va);
 
+            /* Constructor initializer list: : head(h), tail(t...) */
+            ASTNode **init_stmts = arena_alloc(p->arena, sizeof(ASTNode*) * 16);
+            int init_count = 0;
+            if (match(p, TOK_COLON)) {
+                do {
+                    Token mem_tok = expect(p, TOK_IDENT, "member name in constructor initializer");
+                    expect(p, TOK_LPAREN, "'(' in member initializer");
+                    ASTNode **m_args = arena_alloc(p->arena, sizeof(ASTNode*) * 16);
+                    int m_arg_count = 0;
+                    if (!check(p, TOK_RPAREN)) {
+                        do {
+                            m_args[m_arg_count++] = parse_assignment(p);
+                        } while (match(p, TOK_COMMA));
+                    }
+                    expect(p, TOK_RPAREN, "')' in member initializer");
+
+                    ASTNode *this_node = ast_new(p->arena, AST_THIS, mem_tok.loc);
+                    ASTNode *memb = ast_new(p->arena, AST_MEMBER, mem_tok.loc);
+                    memb->member.object = this_node;
+                    memb->member.member_name = mem_tok.str_val;
+                    memb->member.is_arrow = true;
+
+                    if (m_arg_count == 1 && m_args[0]->kind != AST_PACK_EXPANSION) {
+                        ASTNode *assign = ast_new(p->arena, AST_ASSIGN, mem_tok.loc);
+                        assign->assign.op = TOK_ASSIGN;
+                        assign->assign.target = memb;
+                        assign->assign.value = m_args[0];
+
+                        ASTNode *stmt = ast_new(p->arena, AST_STMT_EXPR, mem_tok.loc);
+                        stmt->stmt_expr.expr = assign;
+                        init_stmts[init_count++] = stmt;
+                    } else {
+                        ASTNode *mcall = ast_new(p->arena, AST_CALL, mem_tok.loc);
+                        mcall->call.is_method = true;
+                        mcall->call.object = memb;
+                        mcall->call.name = mem_tok.str_val;
+                        mcall->call.args = m_args;
+                        mcall->call.arg_count = m_arg_count;
+
+                        ASTNode *stmt = ast_new(p->arena, AST_STMT_EXPR, mem_tok.loc);
+                        stmt->stmt_expr.expr = mcall;
+                        init_stmts[init_count++] = stmt;
+                    }
+                } while (match(p, TOK_COMMA));
+            }
+
             ASTNode *body = NULL;
             if (check(p, TOK_LBRACE)) {
                 body = parse_block(p);
             } else {
                 expect(p, TOK_SEMICOLON, "';' or body for constructor");
+            }
+
+            if (init_count > 0) {
+                if (!body) {
+                    body = ast_new(p->arena, AST_STMT_BLOCK, ctor_loc);
+                    body->block.stmts = init_stmts;
+                    body->block.count = init_count;
+                } else {
+                    int total = init_count + body->block.count;
+                    ASTNode **merged = arena_alloc(p->arena, sizeof(ASTNode*) * total);
+                    for (int i = 0; i < init_count; i++) merged[i] = init_stmts[i];
+                    for (int i = 0; i < body->block.count; i++) merged[init_count + i] = body->block.stmts[i];
+                    body->block.stmts = merged;
+                    body->block.count = total;
+                }
             }
 
             ASTNode *fn = ast_new(p->arena, AST_DECL_FUNC, ctor_loc);
@@ -955,6 +1428,19 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
 
         /* Member function, Operator, or Field declaration */
         Type *t = parse_type(p);
+        const char *fn_ptr_name = NULL;
+        Type *fn_ptr_t = NULL;
+        if (try_parse_fn_ptr_declarator(p, t, &fn_ptr_name, &fn_ptr_t) ||
+            try_parse_member_ptr_declarator(p, t, &fn_ptr_name, &fn_ptr_t)) {
+            Field *f = arena_alloc_zero(p->arena, sizeof(Field));
+            f->name = fn_ptr_name;
+            f->type = fn_ptr_t;
+            f->access = current_access;
+            *fields_tail = f;
+            fields_tail = &f->next;
+            expect(p, TOK_SEMICOLON, "';' after member function pointer");
+            continue;
+        }
         SourceLoc name_loc;
         bool is_op = false;
         const char *mname = parse_function_or_operator_name(p, &name_loc, &is_op);
@@ -1078,10 +1564,18 @@ static ASTNode *parse_declaration(Parser *p) {
     if (match(p, TOK_KW_TYPEDEF)) {
         SourceLoc loc = p->current.loc;
         Type *aliased_type = parse_type(p);
-        Token name_tok = expect(p, TOK_IDENT, "name in typedef");
+        const char *name = NULL;
+        Type *fn_ptr_t = NULL;
+        if (try_parse_fn_ptr_declarator(p, aliased_type, &name, &fn_ptr_t) ||
+            try_parse_member_ptr_declarator(p, aliased_type, &name, &fn_ptr_t)) {
+            aliased_type = fn_ptr_t;
+        } else {
+            Token name_tok = expect(p, TOK_IDENT, "name in typedef");
+            name = name_tok.str_val;
+        }
         expect(p, TOK_SEMICOLON, "';' after typedef");
         ASTNode *td = ast_new(p->arena, AST_DECL_TYPEDEF, loc);
-        td->typedef_decl.name = name_tok.str_val;
+        td->typedef_decl.name = name;
         td->typedef_decl.aliased_type = aliased_type;
         return td;
     }
@@ -1089,23 +1583,36 @@ static ASTNode *parse_declaration(Parser *p) {
     if (match(p, TOK_KW_TEMPLATE)) {
         SourceLoc loc = p->current.loc;
         expect(p, TOK_LESS, "'<' after 'template'");
-        const char *param_names[4];
+        const char *param_names[16];
+        bool is_pack[16] = {0};
         int param_count = 0;
+        bool is_variadic = false;
         do {
+            bool param_is_pack = false;
             if (match(p, TOK_KW_TYPENAME) || match(p, TOK_KW_CLASS)) {
-                /* ok */
+                if (match(p, TOK_ELLIPSIS)) {
+                    param_is_pack = true;
+                }
             }
             Token ptok = expect(p, TOK_IDENT, "template parameter name");
-            if (param_count < 4) {
-                param_names[param_count++] = ptok.str_val;
+            if (match(p, TOK_ELLIPSIS)) {
+                param_is_pack = true;
+            }
+            if (param_count < 16) {
+                param_names[param_count] = ptok.str_val;
+                is_pack[param_count] = param_is_pack;
+                if (param_is_pack) is_variadic = true;
+                param_count++;
             }
         } while (match(p, TOK_COMMA));
         expect(p, TOK_GREATER, "'>' after template parameter");
         ASTNode *body_decl = parse_declaration(p);
         ASTNode *templ = ast_new(p->arena, AST_DECL_TEMPLATE, loc);
         templ->template_decl.param_count = param_count;
+        templ->template_decl.is_variadic = is_variadic;
         for (int i = 0; i < param_count; i++) {
             templ->template_decl.param_names[i] = param_names[i];
+            templ->template_decl.is_pack[i] = is_pack[i];
         }
         templ->template_decl.param_name = param_names[0];
         templ->template_decl.decl = body_decl;
@@ -1171,6 +1678,20 @@ static ASTNode *parse_declaration(Parser *p) {
 
     SourceLoc loc = p->current.loc;
     Type *ret_type = parse_type(p);
+
+    const char *fn_ptr_name = NULL;
+    Type *fn_ptr_t = NULL;
+    if (try_parse_fn_ptr_declarator(p, ret_type, &fn_ptr_name, &fn_ptr_t) ||
+        try_parse_member_ptr_declarator(p, ret_type, &fn_ptr_name, &fn_ptr_t)) {
+        ASTNode *var = ast_new(p->arena, AST_STMT_VAR_DECL, loc);
+        var->var_decl.var_type = fn_ptr_t;
+        var->var_decl.name = fn_ptr_name;
+        if (match(p, TOK_ASSIGN)) {
+            var->var_decl.init = parse_expression(p);
+        }
+        expect(p, TOK_SEMICOLON, "';' after global variable declaration");
+        return var;
+    }
 
     const char *class_owner = NULL;
     SourceLoc name_loc;

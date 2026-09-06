@@ -57,6 +57,8 @@ typedef enum {
     /* Multi-character operators */
     TOK_COLON_COLON,    /* :: */
     TOK_ARROW,          /* -> */
+    TOK_DOT_STAR,       /* .* */
+    TOK_ARROW_STAR,     /* ->* */
     TOK_ELLIPSIS,       /* ... */
     TOK_INC,            /* ++ */
     TOK_DEC,            /* -- */
@@ -113,10 +115,20 @@ struct Token {
     const char *str_val; /* Interned string for identifiers / string literals */
 };
 
-#define MAX_INCLUDE_DEPTH 64
+#define MAX_INCLUDE_DEPTH 128
 #define MAX_INCLUDE_PATHS 64
 #define MAX_PRAGMA_ONCE 256
-#define MAX_DEFINED_MACROS 512
+#define MAX_MACRO_DEFS 512
+#define MAX_MACRO_PARAMS 64
+
+typedef struct {
+    const char *name;
+    bool is_function_like;
+    const char **params;
+    int param_count;
+    const char *body;
+    bool is_active;
+} MacroDef;
 
 typedef struct {
     const char *source;
@@ -126,6 +138,7 @@ typedef struct {
     int line;
     int col;
     char *allocated_source; /* Dynamically allocated buffer if loaded via #include */
+    const char *macro_name; /* Active macro name being expanded, or NULL */
 } LexerBuffer;
 
 typedef struct Lexer {
@@ -140,9 +153,9 @@ typedef struct Lexer {
     const char *pragma_once_files[MAX_PRAGMA_ONCE];
     int pragma_once_count;
 
-    /* Macro definitions for header guards */
-    const char *defined_macros[MAX_DEFINED_MACROS];
-    int defined_macro_count;
+    /* Macro definitions */
+    MacroDef macro_defs[MAX_MACRO_DEFS];
+    int macro_def_count;
 
 #define MAX_INCLUDED_FILES 256
 
@@ -154,6 +167,9 @@ typedef struct Lexer {
     const char *included_files[MAX_INCLUDED_FILES];
     int included_file_count;
 } Lexer;
+
+/* Lookup a macro definition by name */
+MacroDef *find_macro(Lexer *l, const char *name);
 
 /* Initialize lexer with source string and filename */
 void lexer_init(Lexer *l, const char *source, const char *filename);

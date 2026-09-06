@@ -26,6 +26,25 @@ void lexer_init(Lexer *l, const char *source, const char *filename) {
     l->buffers[0].line = line;
     l->buffers[0].col = 1;
     l->buffers[0].allocated_source = NULL;
+    l->buffers[0].macro_name = NULL;
+
+    /* Predefine standard macros */
+    l->macro_defs[l->macro_def_count++] = (MacroDef){
+        .name = str_intern("__winds__"),
+        .is_function_like = false,
+        .params = NULL,
+        .param_count = 0,
+        .body = str_intern("1"),
+        .is_active = false
+    };
+    l->macro_defs[l->macro_def_count++] = (MacroDef){
+        .name = str_intern("__cplusplus"),
+        .is_function_like = false,
+        .params = NULL,
+        .param_count = 0,
+        .body = str_intern("201703L"),
+        .is_active = false
+    };
 }
 
 void lexer_add_include_path(Lexer *l, const char *path) {
@@ -68,6 +87,606 @@ static char advance_char(Lexer *l) {
     return c;
 }
 
+MacroDef *find_macro(Lexer *l, const char *name) {
+    if (!name) return NULL;
+    for (int i = 0; i < l->macro_def_count; i++) {
+        if (l->macro_defs[i].name && strcmp(l->macro_defs[i].name, name) == 0) {
+            return &l->macro_defs[i];
+        }
+    }
+    return NULL;
+}
+
+static bool is_macro_active(Lexer *l, const char *name) {
+    if (!name) return false;
+    for (int d = 1; d <= l->depth; d++) {
+        if (l->buffers[d].macro_name && strcmp(l->buffers[d].macro_name, name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+typedef struct {
+    char *data;
+    size_t len;
+    size_t cap;
+} StrBuf;
+
+static void strbuf_init(StrBuf *sb) {
+    sb->cap = 256;
+    sb->len = 0;
+    sb->data = malloc(sb->cap);
+    sb->data[0] = '\0';
+}
+
+static void strbuf_append_char(StrBuf *sb, char c) {
+    if (sb->len + 2 >= sb->cap) {
+        sb->cap *= 2;
+        sb->data = realloc(sb->data, sb->cap);
+    }
+    sb->data[sb->len++] = c;
+    sb->data[sb->len] = '\0';
+}
+
+static void strbuf_append_str(StrBuf *sb, const char *s) {
+    if (!s) return;
+    size_t slen = strlen(s);
+    while (sb->len + slen + 1 >= sb->cap) {
+        sb->cap *= 2;
+        sb->data = realloc(sb->data, sb->cap);
+    }
+    memcpy(sb->data + sb->len, s, slen);
+    sb->len += slen;
+    sb->data[sb->len] = '\0';
+}
+
+static void strbuf_trim_trailing(StrBuf *sb) {
+    while (sb->len > 0 && (sb->data[sb->len - 1] == ' ' || sb->data[sb->len - 1] == '\t')) {
+        sb->data[--sb->len] = '\0';
+    }
+}
+
+static char *trim_str(char *s) {
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+    int len = (int)strlen(s);
+    while (len > 0 && (s[len - 1] == ' ' || s[len - 1] == '\t' || s[len - 1] == '\r' || s[len - 1] == '\n')) {
+        s[--len] = '\0';
+    }
+    return s;
+}
+
+static void push_macro_buffer(Lexer *l, const char *name, const char *text) {
+    if (l->depth + 1 >= MAX_INCLUDE_DEPTH) {
+        SourceLoc loc = current_loc(l);
+        diag_report(DIAG_FATAL, loc, "maximum macro expansion depth exceeded (%d)", MAX_INCLUDE_DEPTH);
+        return;
+    }
+    l->depth++;
+    LexerBuffer *nb = &l->buffers[l->depth];
+    nb->source = text;
+    nb->current = text;
+    nb->line_start = text;
+    nb->filename = l->buffers[l->depth - 1].filename;
+    nb->line = l->buffers[l->depth - 1].line;
+    nb->col = l->buffers[l->depth - 1].col;
+    nb->allocated_source = NULL;
+    nb->macro_name = name;
+}
+
+static char *expand_macro_body(MacroDef *m, char **args, int arg_count) {
+    StrBuf sb;
+    strbuf_init(&sb);
+
+    const char *p = m->body ? m->body : "";
+    while (*p != '\0') {
+        /* Check for token pasting '##' */
+        if (*p == '#' && *(p + 1) == '#') {
+            strbuf_trim_trailing(&sb);
+            p += 2;
+            while (*p == ' ' || *p == '\t') p++;
+
+            /* Next token must be pasted without leading space */
+            if (*p == '#') {
+                /* Stringify next parameter */
+                p++;
+                while (*p == ' ' || *p == '\t') p++;
+                char id[128];
+                int idlen = 0;
+                while ((isalnum((unsigned char)*p) || *p == '_') && idlen < (int)sizeof(id) - 1) {
+                    id[idlen++] = *p++;
+                }
+                id[idlen] = '\0';
+                int pidx = -1;
+                for (int i = 0; i < m->param_count; i++) {
+                    if (strcmp(m->params[i], id) == 0) { pidx = i; break; }
+                }
+                if (pidx >= 0 && pidx < arg_count) {
+                    strbuf_append_char(&sb, '"');
+                    for (const char *s = args[pidx]; *s != '\0'; s++) {
+                        if (*s == '"' || *s == '\\') strbuf_append_char(&sb, '\\');
+                        strbuf_append_char(&sb, *s);
+                    }
+                    strbuf_append_char(&sb, '"');
+                } else {
+                    strbuf_append_str(&sb, id);
+                }
+            } else if (isalnum((unsigned char)*p) || *p == '_') {
+                char id[128];
+                int idlen = 0;
+                while ((isalnum((unsigned char)*p) || *p == '_') && idlen < (int)sizeof(id) - 1) {
+                    id[idlen++] = *p++;
+                }
+                id[idlen] = '\0';
+                int pidx = -1;
+                for (int i = 0; i < m->param_count; i++) {
+                    if (strcmp(m->params[i], id) == 0) { pidx = i; break; }
+                }
+                if (pidx >= 0 && pidx < arg_count) {
+                    strbuf_append_str(&sb, args[pidx]);
+                } else {
+                    strbuf_append_str(&sb, id);
+                }
+            } else {
+                strbuf_append_char(&sb, *p++);
+            }
+            continue;
+        }
+
+        /* Check for stringification '#' */
+        if (*p == '#') {
+            const char *q = p + 1;
+            while (*q == ' ' || *q == '\t') q++;
+            if (isalpha((unsigned char)*q) || *q == '_') {
+                char id[128];
+                int idlen = 0;
+                while ((isalnum((unsigned char)*q) || *q == '_') && idlen < (int)sizeof(id) - 1) {
+                    id[idlen++] = *q++;
+                }
+                id[idlen] = '\0';
+                int pidx = -1;
+                for (int i = 0; i < m->param_count; i++) {
+                    if (strcmp(m->params[i], id) == 0) { pidx = i; break; }
+                }
+                if (pidx >= 0 && pidx < arg_count) {
+                    p = q;
+                    strbuf_append_char(&sb, '"');
+                    for (const char *s = args[pidx]; *s != '\0'; s++) {
+                        if (*s == '"' || *s == '\\') strbuf_append_char(&sb, '\\');
+                        strbuf_append_char(&sb, *s);
+                    }
+                    strbuf_append_char(&sb, '"');
+                    continue;
+                }
+            }
+            /* Not a parameter stringification, output '#' */
+            strbuf_append_char(&sb, *p++);
+            continue;
+        }
+
+        /* String literal in body */
+        if (*p == '"') {
+            strbuf_append_char(&sb, *p++);
+            while (*p != '\0' && *p != '"') {
+                if (*p == '\\' && *(p + 1) != '\0') {
+                    strbuf_append_char(&sb, *p++);
+                }
+                strbuf_append_char(&sb, *p++);
+            }
+            if (*p == '"') strbuf_append_char(&sb, *p++);
+            continue;
+        }
+
+        /* Char literal in body */
+        if (*p == '\'') {
+            strbuf_append_char(&sb, *p++);
+            while (*p != '\0' && *p != '\'') {
+                if (*p == '\\' && *(p + 1) != '\0') {
+                    strbuf_append_char(&sb, *p++);
+                }
+                strbuf_append_char(&sb, *p++);
+            }
+            if (*p == '\'') strbuf_append_char(&sb, *p++);
+            continue;
+        }
+
+        /* Identifier */
+        if (isalpha((unsigned char)*p) || *p == '_') {
+            char id[128];
+            int idlen = 0;
+            while ((isalnum((unsigned char)*p) || *p == '_') && idlen < (int)sizeof(id) - 1) {
+                id[idlen++] = *p++;
+            }
+            id[idlen] = '\0';
+            int pidx = -1;
+            for (int i = 0; i < m->param_count; i++) {
+                if (strcmp(m->params[i], id) == 0) { pidx = i; break; }
+            }
+            if (pidx >= 0 && pidx < arg_count) {
+                strbuf_append_str(&sb, args[pidx]);
+            } else {
+                strbuf_append_str(&sb, id);
+            }
+            continue;
+        }
+
+        /* Any other character */
+        strbuf_append_char(&sb, *p++);
+    }
+
+    return sb.data;
+}
+
+static bool param_is_stringified_or_pasted(MacroDef *m, const char *param_name) {
+    if (!m->body || !param_name) return false;
+    size_t plen = strlen(param_name);
+    const char *p = m->body;
+    while (*p != '\0') {
+        if (*p == '#') {
+            if (*(p + 1) == '#') {
+                p += 2;
+                while (*p == ' ' || *p == '\t') p++;
+                if (strncmp(p, param_name, plen) == 0 &&
+                    !isalnum((unsigned char)p[plen]) && p[plen] != '_') {
+                    return true;
+                }
+            } else {
+                p++;
+                while (*p == ' ' || *p == '\t') p++;
+                if (strncmp(p, param_name, plen) == 0 &&
+                    !isalnum((unsigned char)p[plen]) && p[plen] != '_') {
+                    return true;
+                }
+            }
+        } else if (strncmp(p, param_name, plen) == 0 &&
+                   !isalnum((unsigned char)p[plen]) && p[plen] != '_') {
+            const char *q = p + plen;
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q == '#' && *(q + 1) == '#') {
+                return true;
+            }
+            p += plen;
+        } else {
+            p++;
+        }
+    }
+    return false;
+}
+
+static char *expand_argument_tokens(Lexer *l, const char *arg_text) {
+    if (!arg_text || arg_text[0] == '\0') return strdup("");
+
+    bool has_ident = false;
+    for (const char *p = arg_text; *p; p++) {
+        if (isalpha((unsigned char)*p) || *p == '_') {
+            has_ident = true;
+            break;
+        }
+    }
+    if (!has_ident) return strdup(arg_text);
+
+    Lexer temp_l;
+    lexer_init(&temp_l, arg_text, l->buffers[l->depth].filename);
+    for (int i = 0; i < l->macro_def_count; i++) {
+        temp_l.macro_defs[i] = l->macro_defs[i];
+    }
+    temp_l.macro_def_count = l->macro_def_count;
+
+    StrBuf sb;
+    strbuf_init(&sb);
+    bool first = true;
+
+    while (1) {
+        Token tok = lexer_next(&temp_l);
+        if (tok.kind == TOK_EOF) break;
+
+        if (!first) {
+            strbuf_append_char(&sb, ' ');
+        }
+        first = false;
+
+        if (tok.kind == TOK_IDENT) {
+            strbuf_append_str(&sb, tok.str_val);
+        } else if (tok.kind == TOK_INT_LIT) {
+            char num_buf[32];
+            snprintf(num_buf, sizeof(num_buf), "%ld", (long)tok.int_val);
+            strbuf_append_str(&sb, num_buf);
+        } else if (tok.kind == TOK_STR_LIT) {
+            strbuf_append_char(&sb, '"');
+            strbuf_append_str(&sb, tok.str_val);
+            strbuf_append_char(&sb, '"');
+        } else if (tok.kind == TOK_CHAR_LIT) {
+            char cbuf[16];
+            if (tok.int_val == '\0') strcpy(cbuf, "'\\0'");
+            else if (tok.int_val == '\n') strcpy(cbuf, "'\\n'");
+            else if (tok.int_val == '\t') strcpy(cbuf, "'\\t'");
+            else if (tok.int_val == '\'') strcpy(cbuf, "'\\''");
+            else if (tok.int_val == '\\') strcpy(cbuf, "'\\\\'");
+            else snprintf(cbuf, sizeof(cbuf), "'%c'", (char)tok.int_val);
+            strbuf_append_str(&sb, cbuf);
+        } else {
+            strbuf_append_str(&sb, token_kind_str(tok.kind));
+        }
+    }
+
+    return sb.data;
+}
+
+static bool try_expand_macro(Lexer *l, const char *name, SourceLoc loc) {
+    /* Check predefined dynamic macros */
+    if (strcmp(name, "__LINE__") == 0) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d", loc.line);
+        push_macro_buffer(l, "__LINE__", str_intern(buf));
+        return true;
+    }
+    if (strcmp(name, "__FILE__") == 0) {
+        char buf[1024];
+        snprintf(buf, sizeof(buf), "\"%s\"", loc.file ? loc.file : "<stdin>");
+        push_macro_buffer(l, "__FILE__", str_intern(buf));
+        return true;
+    }
+
+    MacroDef *m = find_macro(l, name);
+    if (!m) return false;
+
+    if (is_macro_active(l, name)) {
+        return false;
+    }
+
+    if (!m->is_function_like) {
+        push_macro_buffer(l, m->name, m->body ? m->body : "");
+        return true;
+    }
+
+    /* Function-like macro: peek if next non-whitespace char is '(' */
+    LexerBuffer *b = &l->buffers[l->depth];
+    const char *p = b->current;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+        p++;
+    }
+    if (*p != '(') {
+        return false;
+    }
+
+    /* Advance to '(' */
+    while (b->current < p) {
+        char ch = advance_char(l);
+        if (ch == '\n') {
+            b->line++;
+            b->col = 1;
+            b->line_start = b->current;
+        }
+    }
+    advance_char(l); /* Consume '(' */
+
+    /* Parse arguments */
+    char *args[MAX_MACRO_PARAMS];
+    int arg_count = 0;
+
+    char arg_buf[4096];
+    int arg_len = 0;
+    int paren_depth = 0;
+    bool in_str = false;
+    bool in_char = false;
+
+    while (peek_char(l) != '\0') {
+        char ch = peek_char(l);
+
+        /* Skip comments inside arguments */
+        if (!in_str && !in_char && ch == '/' && peek_next_char(l) == '/') {
+            advance_char(l);
+            advance_char(l);
+            while (peek_char(l) != '\0' && peek_char(l) != '\n') {
+                advance_char(l);
+            }
+            continue;
+        }
+        if (!in_str && !in_char && ch == '/' && peek_next_char(l) == '*') {
+            advance_char(l);
+            advance_char(l);
+            while (peek_char(l) != '\0') {
+                if (peek_char(l) == '*' && peek_next_char(l) == '/') {
+                    advance_char(l);
+                    advance_char(l);
+                    break;
+                }
+                if (peek_char(l) == '\n') {
+                    b->line++;
+                    b->col = 1;
+                    advance_char(l);
+                    b->line_start = b->current;
+                } else {
+                    advance_char(l);
+                }
+            }
+            if (arg_len < (int)sizeof(arg_buf) - 1) arg_buf[arg_len++] = ' ';
+            continue;
+        }
+
+        ch = advance_char(l);
+
+        if (in_str) {
+            if (arg_len < (int)sizeof(arg_buf) - 1) arg_buf[arg_len++] = ch;
+            if (ch == '\\' && peek_char(l) != '\0') {
+                if (arg_len < (int)sizeof(arg_buf) - 1) arg_buf[arg_len++] = advance_char(l);
+            } else if (ch == '"') {
+                in_str = false;
+            }
+            continue;
+        }
+        if (in_char) {
+            if (arg_len < (int)sizeof(arg_buf) - 1) arg_buf[arg_len++] = ch;
+            if (ch == '\\' && peek_char(l) != '\0') {
+                if (arg_len < (int)sizeof(arg_buf) - 1) arg_buf[arg_len++] = advance_char(l);
+            } else if (ch == '\'') {
+                in_char = false;
+            }
+            continue;
+        }
+
+        if (ch == '"') {
+            in_str = true;
+            if (arg_len < (int)sizeof(arg_buf) - 1) arg_buf[arg_len++] = ch;
+            continue;
+        }
+        if (ch == '\'') {
+            in_char = true;
+            if (arg_len < (int)sizeof(arg_buf) - 1) arg_buf[arg_len++] = ch;
+            continue;
+        }
+
+        if (ch == '(' || ch == '[' || ch == '{') {
+            paren_depth++;
+            if (arg_len < (int)sizeof(arg_buf) - 1) arg_buf[arg_len++] = ch;
+            continue;
+        }
+        if (ch == ')' || ch == ']' || ch == '}') {
+            if (paren_depth > 0) {
+                paren_depth--;
+                if (arg_len < (int)sizeof(arg_buf) - 1) arg_buf[arg_len++] = ch;
+                continue;
+            }
+            /* Reached closing ')' of macro invocation */
+            arg_buf[arg_len] = '\0';
+            char *trimmed = trim_str(arg_buf);
+            if (m->param_count == 0 && trimmed[0] == '\0') {
+                /* Zero params and empty arg */
+            } else {
+                if (arg_count < MAX_MACRO_PARAMS) {
+                    args[arg_count++] = strdup(trimmed);
+                }
+            }
+            break;
+        }
+
+        if (ch == ',' && paren_depth == 0) {
+            arg_buf[arg_len] = '\0';
+            char *trimmed = trim_str(arg_buf);
+            if (arg_count < MAX_MACRO_PARAMS) {
+                args[arg_count++] = strdup(trimmed);
+            }
+            arg_len = 0;
+            continue;
+        }
+
+        if (ch == '\n') {
+            b->line++;
+            b->col = 1;
+            b->line_start = b->current;
+        }
+        if (arg_len < (int)sizeof(arg_buf) - 1) {
+            arg_buf[arg_len++] = ch;
+        }
+    }
+
+    if (arg_count != m->param_count) {
+        diag_report(DIAG_ERROR, loc, "macro '%s' requires %d arguments, but %d were provided",
+                    m->name, m->param_count, arg_count);
+        for (int i = 0; i < arg_count; i++) free(args[i]);
+        return false;
+    }
+
+    char *subst_args[MAX_MACRO_PARAMS];
+    for (int i = 0; i < arg_count; i++) {
+        if (param_is_stringified_or_pasted(m, m->params[i])) {
+            subst_args[i] = strdup(args[i]);
+        } else {
+            subst_args[i] = expand_argument_tokens(l, args[i]);
+        }
+    }
+
+    char *expanded = expand_macro_body(m, subst_args, arg_count);
+    for (int i = 0; i < arg_count; i++) {
+        free(args[i]);
+        free(subst_args[i]);
+    }
+
+    const char *interned = str_intern(expanded);
+    free(expanded);
+
+    push_macro_buffer(l, m->name, interned);
+    return true;
+}
+
+static bool eval_preprocessor_condition(Lexer *l) {
+    while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+
+    bool invert = false;
+    if (peek_char(l) == '!') {
+        advance_char(l);
+        while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+        invert = true;
+    }
+
+    /* Check for 'defined' keyword */
+    char word[64];
+    int wlen = 0;
+    const char *p = l->buffers[l->depth].current;
+    while (isalpha((unsigned char)*p) || *p == '_') {
+        if (wlen < (int)sizeof(word) - 1) word[wlen++] = *p;
+        p++;
+    }
+    word[wlen] = '\0';
+
+    if (strcmp(word, "defined") == 0) {
+        while (wlen-- > 0) advance_char(l);
+        while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+        bool has_paren = false;
+        if (peek_char(l) == '(') {
+            has_paren = true;
+            advance_char(l);
+            while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+        }
+        char mname[128];
+        int mlen = 0;
+        while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && mlen < (int)sizeof(mname) - 1) {
+            mname[mlen++] = advance_char(l);
+        }
+        mname[mlen] = '\0';
+        if (has_paren) {
+            while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+            if (peek_char(l) == ')') advance_char(l);
+        }
+        bool def = (find_macro(l, mname) != NULL);
+        return invert ? !def : def;
+    }
+
+    /* Check for integer literal */
+    if (isdigit((unsigned char)peek_char(l))) {
+        int64_t val = 0;
+        while (isdigit((unsigned char)peek_char(l))) {
+            val = val * 10 + (advance_char(l) - '0');
+        }
+        bool res = (val != 0);
+        return invert ? !res : res;
+    }
+
+    /* Check for macro name */
+    if (isalpha((unsigned char)peek_char(l)) || peek_char(l) == '_') {
+        char mname[128];
+        int mlen = 0;
+        while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && mlen < (int)sizeof(mname) - 1) {
+            mname[mlen++] = advance_char(l);
+        }
+        mname[mlen] = '\0';
+        MacroDef *m = find_macro(l, mname);
+        bool res = false;
+        if (m && m->body) {
+            const char *b = m->body;
+            while (*b == ' ' || *b == '\t') b++;
+            if (isdigit((unsigned char)*b)) {
+                res = (atoi(b) != 0);
+            } else {
+                res = true;
+            }
+        }
+        return invert ? !res : res;
+    }
+
+    return false;
+}
+
 static void handle_preprocessor(Lexer *l) {
     /* Skip '#' */
     advance_char(l);
@@ -96,13 +715,7 @@ static void handle_preprocessor(Lexer *l) {
         macro[mlen] = '\0';
 
         if (l->skip_depth == 0) {
-            bool is_def = false;
-            for (int i = 0; i < l->defined_macro_count; i++) {
-                if (strcmp(l->defined_macros[i], macro) == 0) {
-                    is_def = true;
-                    break;
-                }
-            }
+            bool is_def = (find_macro(l, macro) != NULL);
             if (is_def) {
                 l->skip_depth = l->cond_depth;
             }
@@ -117,16 +730,27 @@ static void handle_preprocessor(Lexer *l) {
         macro[mlen] = '\0';
 
         if (l->skip_depth == 0) {
-            bool is_def = false;
-            for (int i = 0; i < l->defined_macro_count; i++) {
-                if (strcmp(l->defined_macros[i], macro) == 0) {
-                    is_def = true;
-                    break;
-                }
-            }
+            bool is_def = (find_macro(l, macro) != NULL);
             if (!is_def) {
                 l->skip_depth = l->cond_depth;
             }
+        }
+    } else if (strcmp(dir, "if") == 0) {
+        l->cond_depth++;
+        if (l->skip_depth == 0) {
+            bool cond = eval_preprocessor_condition(l);
+            if (!cond) {
+                l->skip_depth = l->cond_depth;
+            }
+        }
+    } else if (strcmp(dir, "elif") == 0) {
+        if (l->skip_depth == l->cond_depth) {
+            bool cond = eval_preprocessor_condition(l);
+            if (cond) {
+                l->skip_depth = 0;
+            }
+        } else if (l->skip_depth == 0) {
+            l->skip_depth = l->cond_depth;
         }
     } else if (strcmp(dir, "else") == 0) {
         if (l->skip_depth == l->cond_depth) {
@@ -142,7 +766,20 @@ static void handle_preprocessor(Lexer *l) {
             l->cond_depth--;
         }
     } else if (l->skip_depth > 0) {
-        /* In skipping branch, ignore define / pragma / include */
+        /* In skipping branch, ignore define / undef / pragma / include */
+    } else if (strcmp(dir, "undef") == 0) {
+        char macro[128];
+        int mlen = 0;
+        while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && mlen < (int)sizeof(macro) - 1) {
+            macro[mlen++] = advance_char(l);
+        }
+        macro[mlen] = '\0';
+        for (int i = 0; i < l->macro_def_count; i++) {
+            if (l->macro_defs[i].name && strcmp(l->macro_defs[i].name, macro) == 0) {
+                l->macro_defs[i].name = NULL;
+                break;
+            }
+        }
     } else if (strcmp(dir, "define") == 0) {
         char macro[128];
         int mlen = 0;
@@ -150,8 +787,146 @@ static void handle_preprocessor(Lexer *l) {
             macro[mlen++] = advance_char(l);
         }
         macro[mlen] = '\0';
-        if (mlen > 0 && l->defined_macro_count < MAX_DEFINED_MACROS) {
-            l->defined_macros[l->defined_macro_count++] = str_intern(macro);
+
+        bool is_function_like = false;
+        const char *params[MAX_MACRO_PARAMS];
+        int param_count = 0;
+
+        /* Check immediately for '(' without intervening whitespace */
+        if (peek_char(l) == '(') {
+            is_function_like = true;
+            advance_char(l); /* Consume '(' */
+            while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+            if (peek_char(l) == ')') {
+                advance_char(l);
+            } else {
+                while (peek_char(l) != '\0' && peek_char(l) != ')' && peek_char(l) != '\n') {
+                    while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+                    char pname[128];
+                    int plen = 0;
+                    while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && plen < (int)sizeof(pname) - 1) {
+                        pname[plen++] = advance_char(l);
+                    }
+                    pname[plen] = '\0';
+                    if (plen > 0 && param_count < MAX_MACRO_PARAMS) {
+                        params[param_count++] = str_intern(pname);
+                    }
+                    while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+                    if (peek_char(l) == ',') {
+                        advance_char(l);
+                    } else if (peek_char(l) == ')') {
+                        advance_char(l);
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        /* Skip horizontal whitespace before body */
+        while (peek_char(l) == ' ' || peek_char(l) == '\t') {
+            advance_char(l);
+        }
+
+        /* Read body with line continuation '\' and comment handling */
+        char body_buf[4096];
+        int blen = 0;
+        while (peek_char(l) != '\0') {
+            char c = peek_char(l);
+
+            if (c == '\\') {
+                const char *p = l->buffers[l->depth].current + 1;
+                while (*p == ' ' || *p == '\t') p++;
+                if (*p == '\r' || *p == '\n') {
+                    advance_char(l); /* Consume '\' */
+                    while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+                    if (peek_char(l) == '\r') advance_char(l);
+                    if (peek_char(l) == '\n') advance_char(l);
+                    LexerBuffer *b = &l->buffers[l->depth];
+                    b->line++;
+                    b->col = 1;
+                    b->line_start = b->current;
+                    if (blen > 0 && body_buf[blen - 1] != ' ' && blen < (int)sizeof(body_buf) - 1) {
+                        body_buf[blen++] = ' ';
+                    }
+                    continue;
+                }
+            }
+
+            if (c == '/' && peek_next_char(l) == '/') {
+                break; /* Single-line comment ends body */
+            }
+            if (c == '/' && peek_next_char(l) == '*') {
+                advance_char(l);
+                advance_char(l);
+                while (peek_char(l) != '\0') {
+                    if (peek_char(l) == '*' && peek_next_char(l) == '/') {
+                        advance_char(l);
+                        advance_char(l);
+                        break;
+                    }
+                    if (peek_char(l) == '\n') {
+                        l->buffers[l->depth].line++;
+                        l->buffers[l->depth].col = 1;
+                        advance_char(l);
+                        l->buffers[l->depth].line_start = l->buffers[l->depth].current;
+                    } else {
+                        advance_char(l);
+                    }
+                }
+                if (blen > 0 && body_buf[blen - 1] != ' ' && blen < (int)sizeof(body_buf) - 1) {
+                    body_buf[blen++] = ' ';
+                }
+                continue;
+            }
+
+            if (c == '\n' || c == '\r') {
+                break;
+            }
+
+            if (blen < (int)sizeof(body_buf) - 1) {
+                body_buf[blen++] = advance_char(l);
+            } else {
+                advance_char(l);
+            }
+        }
+        body_buf[blen] = '\0';
+
+        /* Trim trailing whitespace */
+        while (blen > 0 && (body_buf[blen - 1] == ' ' || body_buf[blen - 1] == '\t')) {
+            body_buf[--blen] = '\0';
+        }
+
+        if (mlen > 0) {
+            MacroDef *target = find_macro(l, macro);
+            if (!target) {
+                for (int i = 0; i < l->macro_def_count; i++) {
+                    if (l->macro_defs[i].name == NULL) {
+                        target = &l->macro_defs[i];
+                        break;
+                    }
+                }
+            }
+            if (!target && l->macro_def_count < MAX_MACRO_DEFS) {
+                target = &l->macro_defs[l->macro_def_count++];
+            }
+            if (target) {
+                target->name = str_intern(macro);
+                target->is_function_like = is_function_like;
+                target->param_count = param_count;
+                if (param_count > 0) {
+                    const char **p_arr = malloc(sizeof(const char *) * param_count);
+                    for (int pi = 0; pi < param_count; pi++) {
+                        p_arr[pi] = params[pi];
+                    }
+                    target->params = p_arr;
+                } else {
+                    target->params = NULL;
+                }
+                target->body = str_intern(body_buf);
+                target->is_active = false;
+            }
         }
     } else if (strcmp(dir, "pragma") == 0) {
         char word[64];
@@ -314,6 +1089,7 @@ static void handle_preprocessor(Lexer *l) {
                                 nb->line = 1;
                                 nb->col = 1;
                                 nb->allocated_source = hbuf;
+                                nb->macro_name = NULL;
                                 return;
                             }
                         }
@@ -371,8 +1147,21 @@ static void skip_whitespace_and_comments(Lexer *l) {
                     advance_char(l);
                 }
             }
-        } else if (c == '#' && (l->buffers[l->depth].current == l->buffers[l->depth].line_start || *(l->buffers[l->depth].current - 1) == '\n')) {
-            handle_preprocessor(l);
+        } else if (c == '#') {
+            const char *p = l->buffers[l->depth].line_start;
+            bool at_line_start = true;
+            while (p < l->buffers[l->depth].current) {
+                if (*p != ' ' && *p != '\t' && *p != '\r') {
+                    at_line_start = false;
+                    break;
+                }
+                p++;
+            }
+            if (at_line_start) {
+                handle_preprocessor(l);
+            } else {
+                break;
+            }
         } else if (l->skip_depth > 0) {
             /* If we are skipping conditional compilation block, consume characters until '#' or '\n' */
             advance_char(l);
@@ -398,6 +1187,10 @@ static Token scan_identifier_or_keyword(Lexer *l, SourceLoc loc) {
     }
     const char *name = str_intern_range(start, l->buffers[l->depth].current);
     loc.length = (int)(l->buffers[l->depth].current - start);
+
+    if (try_expand_macro(l, name, loc)) {
+        return lexer_next(l);
+    }
 
     Token tok = make_token(l, TOK_IDENT, loc);
     tok.str_val = name;
@@ -586,7 +1379,12 @@ Token lexer_next(Lexer *l) {
                 if (next == ':') { advance_char(l); loc.length = 2; return make_token(l, TOK_COLON_COLON, loc); }
                 return make_token(l, TOK_COLON, loc);
             case '-':
-                if (next == '>') { advance_char(l); loc.length = 2; return make_token(l, TOK_ARROW, loc); }
+                if (next == '>') {
+                    advance_char(l);
+                    if (peek_char(l) == '*') { advance_char(l); loc.length = 3; return make_token(l, TOK_ARROW_STAR, loc); }
+                    loc.length = 2;
+                    return make_token(l, TOK_ARROW, loc);
+                }
                 if (next == '-') { advance_char(l); loc.length = 2; return make_token(l, TOK_DEC, loc); }
                 if (next == '=') { advance_char(l); loc.length = 2; return make_token(l, TOK_MINUS_EQ, loc); }
                 return make_token(l, TOK_MINUS, loc);
@@ -636,6 +1434,11 @@ Token lexer_next(Lexer *l) {
                 if (next == '=') { advance_char(l); loc.length = 2; return make_token(l, TOK_PIPE_EQ, loc); }
                 return make_token(l, TOK_PIPE, loc);
             case '.':
+                if (next == '*') {
+                    advance_char(l);
+                    loc.length = 2;
+                    return make_token(l, TOK_DOT_STAR, loc);
+                }
                 if (next == '.' && peek_next_char(l) == '.') {
                     advance_char(l);
                     advance_char(l);
@@ -701,6 +1504,8 @@ const char *token_kind_str(TokenKind kind) {
         case TOK_KW_NULLPTR: return "nullptr";
         case TOK_COLON_COLON: return "::";
         case TOK_ARROW: return "->";
+        case TOK_DOT_STAR: return ".*";
+        case TOK_ARROW_STAR: return "->*";
         case TOK_ELLIPSIS: return "...";
         case TOK_INC: return "++";
         case TOK_DEC: return "--";

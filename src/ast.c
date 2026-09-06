@@ -82,6 +82,33 @@ Type *type_func(Arena *arena, Type *ret, TypeParam *params, int count, bool vara
     return t;
 }
 
+Type *type_func_ptr(Arena *arena, Type *ret, TypeParam *params, int count, bool varargs) {
+    Type *fn_t = type_func(arena, ret, params, count, varargs);
+    return type_ptr(arena, fn_t);
+}
+
+bool type_is_func_ptr(Type *t) {
+    return t != NULL && t->kind == TYPE_PTR && t->ptr.base != NULL && t->ptr.base->kind == TYPE_FUNC;
+}
+
+Type *type_member_ptr(Arena *arena, Type *class_type, Type *member_type) {
+    Type *t = type_new(arena, TYPE_MEMBER_PTR);
+    t->size = 8;
+    t->align = 8;
+    t->member_ptr.class_type = class_type;
+    t->member_ptr.member_type = member_type;
+    return t;
+}
+
+Type *type_member_func_ptr(Arena *arena, Type *class_type, Type *func_type) {
+    Type *t = type_new(arena, TYPE_MEMBER_FUNC_PTR);
+    t->size = 8;
+    t->align = 8;
+    t->member_func_ptr.class_type = class_type;
+    t->member_func_ptr.func_type = func_type;
+    return t;
+}
+
 bool type_equals(Type *a, Type *b) {
     if (a == b) return true;
     if (!a || !b) return false;
@@ -116,6 +143,12 @@ bool type_equals(Type *a, Type *b) {
             }
             return true;
         }
+        case TYPE_MEMBER_PTR:
+            return type_equals(a->member_ptr.class_type, b->member_ptr.class_type) &&
+                   type_equals(a->member_ptr.member_type, b->member_ptr.member_type);
+        case TYPE_MEMBER_FUNC_PTR:
+            return type_equals(a->member_func_ptr.class_type, b->member_func_ptr.class_type) &&
+                   type_equals(a->member_func_ptr.func_type, b->member_func_ptr.func_type);
         default:
             return true;
     }
@@ -154,6 +187,15 @@ const char *type_to_string(Arena *arena, Type *t) {
             return t->name ? t->name : "class";
         case TYPE_FUNC:
             snprintf(buf, sizeof(buf), "func(...)->%s", type_to_string(arena, t->func.return_type));
+            return arena_strdup(arena, buf);
+        case TYPE_MEMBER_PTR:
+            snprintf(buf, sizeof(buf), "%s %s::*",
+                     type_to_string(arena, t->member_ptr.member_type),
+                     type_to_string(arena, t->member_ptr.class_type));
+            return arena_strdup(arena, buf);
+        case TYPE_MEMBER_FUNC_PTR:
+            snprintf(buf, sizeof(buf), "%s::*func",
+                     type_to_string(arena, t->member_func_ptr.class_type));
             return arena_strdup(arena, buf);
     }
     return "type";
@@ -219,6 +261,11 @@ void ast_dump(ASTNode *node, int indent) {
             printf("MemberAccess: %s%s\n", node->member.is_arrow ? "->" : ".", node->member.member_name);
             ast_dump(node->member.object, indent + 1);
             break;
+        case AST_MEMBER_PTR_ACCESS:
+            printf("MemberPtrAccess: %s\n", node->member_ptr_access.is_arrow ? "->*" : ".*");
+            ast_dump(node->member_ptr_access.object, indent + 1);
+            ast_dump(node->member_ptr_access.member_ptr, indent + 1);
+            break;
         case AST_NEW:
             printf("NewExpr: type=%s, args=%d\n", node->new_expr.target_type->name, node->new_expr.arg_count);
             for (int i = 0; i < node->new_expr.arg_count; i++) {
@@ -236,6 +283,10 @@ void ast_dump(ASTNode *node, int indent) {
             break;
         case AST_SIZEOF:
             printf("SizeofExpr\n");
+            break;
+        case AST_PACK_EXPANSION:
+            printf("PackExpansion:\n");
+            ast_dump(node->pack_expansion.expr, indent + 1);
             break;
         case AST_STMT_EXPR:
             printf("ExprStmt:\n");
