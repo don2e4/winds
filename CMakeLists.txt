@@ -87,4 +87,16 @@ if(BUILD_TESTING)
         COMMAND ${BASH_EXECUTABLE} -c "WINDS=$<TARGET_FILE:winds> bash tests/11_warnings_and_run.sh"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
+
+    add_test(
+        NAME test_20_multifile
+        COMMAND ${BASH_EXECUTABLE} -c "WINDS=$<TARGET_FILE:winds> bash tests/20_multifile.sh"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
+    add_test(
+        NAME test_21_c_compat
+        COMMAND ${BASH_EXECUTABLE} -c "$<TARGET_FILE:winds> tests/21_c_compat.c -o ${CMAKE_CURRENT_BINARY_DIR}/21_c_compat.out && ${CMAKE_CURRENT_BINARY_DIR}/21_c_compat.out"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
 endif()

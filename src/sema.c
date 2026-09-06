@@ -500,7 +500,8 @@ static ASTNode *clone_and_substitute_ast(Arena *arena, ASTNode *node, TemplateEn
     *res = *node;
 
     switch (node->kind) {
-        case AST_STMT_BLOCK: {
+        case AST_STMT_BLOCK:
+        case AST_STMT_DECL_LIST: {
             if (node->block.count > 0) {
                 ASTNode **stmts = arena_alloc(arena, sizeof(ASTNode*) * node->block.count);
                 for (int i = 0; i < node->block.count; i++) {
@@ -524,8 +525,27 @@ static ASTNode *clone_and_substitute_ast(Arena *arena, ASTNode *node, TemplateEn
             res->if_stmt.else_branch = clone_and_substitute_ast(arena, node->if_stmt.else_branch, env);
             break;
         case AST_STMT_WHILE:
+        case AST_STMT_DO_WHILE:
             res->while_stmt.cond = clone_and_substitute_ast(arena, node->while_stmt.cond, env);
             res->while_stmt.body = clone_and_substitute_ast(arena, node->while_stmt.body, env);
+            break;
+        case AST_STMT_SWITCH:
+            res->switch_stmt.expr = clone_and_substitute_ast(arena, node->switch_stmt.expr, env);
+            if (node->switch_stmt.case_count > 0) {
+                res->switch_stmt.cases = arena_alloc(arena, sizeof(ASTNode *) * node->switch_stmt.case_count);
+                for (int i = 0; i < node->switch_stmt.case_count; i++) {
+                    res->switch_stmt.cases[i] = clone_and_substitute_ast(arena, node->switch_stmt.cases[i], env);
+                }
+            }
+            break;
+        case AST_STMT_CASE:
+            res->case_stmt.value = clone_and_substitute_ast(arena, node->case_stmt.value, env);
+            if (node->case_stmt.count > 0) {
+                res->case_stmt.stmts = arena_alloc(arena, sizeof(ASTNode *) * node->case_stmt.count);
+                for (int i = 0; i < node->case_stmt.count; i++) {
+                    res->case_stmt.stmts[i] = clone_and_substitute_ast(arena, node->case_stmt.stmts[i], env);
+                }
+            }
             break;
         case AST_STMT_FOR:
             res->for_stmt.init = clone_and_substitute_ast(arena, node->for_stmt.init, env);
@@ -539,6 +559,23 @@ static ASTNode *clone_and_substitute_ast(Arena *arena, ASTNode *node, TemplateEn
         case AST_BINARY:
             res->binary.left = clone_and_substitute_ast(arena, node->binary.left, env);
             res->binary.right = clone_and_substitute_ast(arena, node->binary.right, env);
+            break;
+        case AST_CONDITIONAL:
+            res->conditional.cond = clone_and_substitute_ast(arena, node->conditional.cond, env);
+            res->conditional.then_expr = clone_and_substitute_ast(arena, node->conditional.then_expr, env);
+            res->conditional.else_expr = clone_and_substitute_ast(arena, node->conditional.else_expr, env);
+            break;
+        case AST_COMMA:
+            res->comma.left = clone_and_substitute_ast(arena, node->comma.left, env);
+            res->comma.right = clone_and_substitute_ast(arena, node->comma.right, env);
+            break;
+        case AST_INIT_LIST:
+            if (node->init_list.count > 0) {
+                res->init_list.items = arena_alloc(arena, sizeof(ASTNode *) * node->init_list.count);
+                for (int i = 0; i < node->init_list.count; i++) {
+                    res->init_list.items[i] = clone_and_substitute_ast(arena, node->init_list.items[i], env);
+                }
+            }
             break;
         case AST_UNARY:
             res->unary.operand = clone_and_substitute_ast(arena, node->unary.operand, env);
@@ -1259,6 +1296,7 @@ const char *mangle_function_name(Arena *arena, const char *class_owner, const ch
             strcmp(name, "fprintf") == 0 ||
             strcmp(name, "sprintf") == 0 ||
             strcmp(name, "snprintf") == 0 ||
+            strcmp(name, "vsnprintf") == 0 ||
             strcmp(name, "fopen") == 0 ||
             strcmp(name, "fclose") == 0 ||
             strcmp(name, "fflush") == 0 ||
@@ -1267,6 +1305,7 @@ const char *mangle_function_name(Arena *arena, const char *class_owner, const ch
             strcmp(name, "realloc") == 0 ||
             strcmp(name, "calloc") == 0 ||
             strcmp(name, "memcpy") == 0 ||
+            strcmp(name, "memchr") == 0 ||
             strcmp(name, "memmove") == 0 ||
             strcmp(name, "memset") == 0 ||
             strcmp(name, "strcmp") == 0 ||
@@ -1362,10 +1401,11 @@ void sema_init(Sema *s, Arena *arena) {
     /* Built-in standard library function symbols */
     const char *builtins[] = {
         "printf", "puts", "malloc", "free", "exit", "putchar", "getchar",
-        "fputs", "fputc", "fprintf", "sprintf", "snprintf", "fopen", "fclose",
-        "fflush", "fread", "fwrite", "realloc", "calloc", "memcpy", "memmove",
+        "fputs", "fputc", "fprintf", "sprintf", "snprintf", "vsnprintf", "fopen", "fclose",
+        "fflush", "fread", "fwrite", "realloc", "calloc", "memcpy", "memchr", "memmove",
         "memset", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strncat",
-        "abort", "atoi", "atol", "abs", "labs", "scanf"
+        "abort", "atoi", "atol", "abs", "labs", "scanf",
+        "open", "read", "write", "close", "lseek"
     };
     for (size_t i = 0; i < sizeof(builtins)/sizeof(builtins[0]); i++) {
         Symbol *sym = arena_alloc_zero(arena, sizeof(Symbol));
@@ -1445,6 +1485,12 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
             if (sym) {
                 sym->is_used = true;
                 expr->var_ref.sym = sym;
+                if (sym->is_const_value) {
+                    expr->kind = AST_LIT_INT;
+                    expr->int_val = sym->const_value;
+                    expr->type = g_type_int;
+                    break;
+                }
                 if (sym->kind == SYM_FUNC) {
                     expr->type = type_ptr(s->arena, sym->type);
                 } else {
@@ -1626,6 +1672,23 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
             }
             break;
         }
+
+        case AST_CONDITIONAL:
+            analyze_expr(s, expr->conditional.cond);
+            analyze_expr(s, expr->conditional.then_expr);
+            analyze_expr(s, expr->conditional.else_expr);
+            expr->type = expr->conditional.then_expr->type;
+            break;
+
+        case AST_COMMA:
+            analyze_expr(s, expr->comma.left);
+            analyze_expr(s, expr->comma.right);
+            expr->type = expr->comma.right->type;
+            break;
+
+        case AST_INIT_LIST:
+            for (int i = 0; i < expr->init_list.count; i++) analyze_expr(s, expr->init_list.items[i]);
+            break;
 
         case AST_UNARY: {
             if (expr->unary.op == TOK_AMP && expr->unary.operand &&
@@ -2199,9 +2262,18 @@ static void analyze_stmt(Sema *s, ASTNode *stmt) {
             break;
         }
 
+        case AST_STMT_DECL_LIST:
+            for (int i = 0; i < stmt->block.count; i++) analyze_stmt(s, stmt->block.stmts[i]);
+            break;
+
         case AST_STMT_VAR_DECL: {
             stmt->var_decl.var_type = resolve_type(s, stmt->var_decl.var_type);
             Type *vt = stmt->var_decl.var_type;
+            if (vt && vt->kind == TYPE_ARRAY && vt->array.count == 0 &&
+                stmt->var_decl.init && stmt->var_decl.init->kind == AST_INIT_LIST) {
+                vt->array.count = (size_t)stmt->var_decl.init->init_list.count;
+                vt->size = vt->array.base->size * vt->array.count;
+            }
 
             /* Check if class variable needs default constructor invocation */
             if (stmt->var_decl.init == NULL && vt && vt->kind == TYPE_CLASS && vt->name) {
@@ -2224,19 +2296,36 @@ static void analyze_stmt(Sema *s, ASTNode *stmt) {
                 analyze_expr(s, stmt->var_decl.init);
             }
 
-            /* Allocate space on local stack frame */
+            /* Allocate storage. Function statics get one private global symbol. */
             size_t size = vt->size > 0 ? vt->size : 4;
             if (size < 4) size = 4;
-            /* 8-byte align stack allocation for performance */
-            size = (size + 7) & ~7;
-            s->current_stack_offset += (int)size;
 
             Symbol *sym = arena_alloc_zero(s->arena, sizeof(Symbol));
             sym->kind = SYM_VAR;
             sym->name = stmt->var_decl.name;
             sym->type = vt;
             sym->loc = stmt->loc;
-            sym->stack_offset = -s->current_stack_offset;
+            if (stmt->var_decl.is_static || stmt->var_decl.is_extern) {
+                sym->is_global = true;
+                if (stmt->var_decl.is_extern) {
+                    sym->mangled_name = sym->name;
+                } else {
+                    const char *function_name = "scope";
+                    for (Scope *scope = s->current_scope; scope; scope = scope->parent) {
+                        if (scope->kind == SCOPE_FUNCTION && scope->name) {
+                            function_name = scope->name;
+                            break;
+                        }
+                    }
+                    char global_name[512];
+                    snprintf(global_name, sizeof(global_name), "__winds_static_%s_%s", function_name, sym->name);
+                    sym->mangled_name = arena_strdup(s->arena, global_name);
+                }
+            } else {
+                size = (size + 7) & ~7;
+                s->current_stack_offset += (int)size;
+                sym->stack_offset = -s->current_stack_offset;
+            }
             sym->is_ref = (vt->kind == TYPE_REF);
             stmt->var_decl.sym = sym;
 
@@ -2253,8 +2342,23 @@ static void analyze_stmt(Sema *s, ASTNode *stmt) {
             break;
 
         case AST_STMT_WHILE:
+        case AST_STMT_DO_WHILE:
             analyze_expr(s, stmt->while_stmt.cond);
             analyze_stmt(s, stmt->while_stmt.body);
+            break;
+
+        case AST_STMT_SWITCH:
+            analyze_expr(s, stmt->switch_stmt.expr);
+            scope_push(s, SCOPE_BLOCK, NULL);
+            for (int i = 0; i < stmt->switch_stmt.case_count; i++) {
+                analyze_stmt(s, stmt->switch_stmt.cases[i]);
+            }
+            scope_pop(s);
+            break;
+
+        case AST_STMT_CASE:
+            if (stmt->case_stmt.value) analyze_expr(s, stmt->case_stmt.value);
+            for (int i = 0; i < stmt->case_stmt.count; i++) analyze_stmt(s, stmt->case_stmt.stmts[i]);
             break;
 
         case AST_STMT_FOR:
@@ -2274,6 +2378,8 @@ static void analyze_stmt(Sema *s, ASTNode *stmt) {
 
         case AST_STMT_BREAK:
         case AST_STMT_CONTINUE:
+        case AST_STMT_GOTO:
+        case AST_STMT_LABEL:
             break;
 
         default:
@@ -2315,7 +2421,7 @@ static void analyze_function(Sema *s, ASTNode *fn) {
     }
 
     const char *mangled = mangle_function_name(s->arena, class_owner, name, tparams_head, is_ctor, is_dtor);
-    if (fn->func_decl.is_extern && !class_owner) {
+    if ((s->c_mode || fn->func_decl.is_extern) && !class_owner) {
         mangled = str_intern(name);
     }
     fn->func_decl.mangled_name = mangled;
@@ -2478,6 +2584,23 @@ static void sema_register_classes(Sema *s, ASTNode *decl, const char *ns_prefix)
             short_sym->is_global = true;
             add_symbol(s->global_scope, short_sym);
         }
+    } else if (decl->kind == AST_DECL_ENUM) {
+        Symbol *type_sym = arena_alloc_zero(s->arena, sizeof(Symbol));
+        type_sym->kind = SYM_TYPEDEF;
+        type_sym->name = decl->enum_decl.name;
+        type_sym->type = g_type_int;
+        type_sym->is_global = true;
+        add_symbol(s->global_scope, type_sym);
+        for (int i = 0; i < decl->enum_decl.count; i++) {
+            Symbol *item = arena_alloc_zero(s->arena, sizeof(Symbol));
+            item->kind = SYM_VAR;
+            item->name = decl->enum_decl.item_names[i];
+            item->type = g_type_int;
+            item->is_global = true;
+            item->is_const_value = true;
+            item->const_value = decl->enum_decl.item_values[i];
+            add_symbol(s->global_scope, item);
+        }
     } else if (decl->kind == AST_DECL_TYPEDEF) {
         const char *full_name = decl->typedef_decl.name;
         if (ns_prefix && strstr(decl->typedef_decl.name, "::") == NULL) {
@@ -2558,7 +2681,9 @@ static void sema_register_classes(Sema *s, ASTNode *decl, const char *ns_prefix)
 
 static void sema_analyze_decls(Sema *s, ASTNode *decl, const char *ns_prefix) {
     if (!decl) return;
-    if (decl->kind == AST_DECL_FUNC) {
+    if (decl->kind == AST_STMT_DECL_LIST) {
+        for (int i = 0; i < decl->block.count; i++) sema_analyze_decls(s, decl->block.stmts[i], ns_prefix);
+    } else if (decl->kind == AST_DECL_FUNC) {
         if (!decl->func_decl.class_owner && ns_prefix) {
             decl->func_decl.class_owner = ns_prefix;
         }
@@ -2596,6 +2721,13 @@ static void sema_analyze_decls(Sema *s, ASTNode *decl, const char *ns_prefix) {
         analyze_stmt(s, decl);
     } else if (decl->kind == AST_STMT_VAR_DECL) {
         decl->var_decl.var_type = resolve_type(s, decl->var_decl.var_type);
+        if (decl->var_decl.var_type && decl->var_decl.var_type->kind == TYPE_ARRAY &&
+            decl->var_decl.var_type->array.count == 0 && decl->var_decl.init &&
+            decl->var_decl.init->kind == AST_INIT_LIST) {
+            decl->var_decl.var_type->array.count = (size_t)decl->var_decl.init->init_list.count;
+            decl->var_decl.var_type->size = decl->var_decl.var_type->array.base->size *
+                                           decl->var_decl.var_type->array.count;
+        }
         const char *full_name = decl->var_decl.name;
         if (ns_prefix && strstr(decl->var_decl.name, "::") == NULL) {
             char buf[256];

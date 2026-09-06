@@ -24,6 +24,8 @@ struct Symbol {
     bool is_param;
     bool is_ref;      /* Reference variable (implicitly dereferenced) */
     bool is_used;     /* Variable was referenced in an expression */
+    bool is_const_value;
+    int64_t const_value;
     ASTNode *ast_decl;
     struct Symbol *next;
 };
@@ -54,6 +56,7 @@ typedef struct {
     Type *current_class;
     int current_stack_offset;
     bool warn_unused;
+    bool c_mode;
 } Sema;
 
 void sema_init(Sema *s, Arena *arena);

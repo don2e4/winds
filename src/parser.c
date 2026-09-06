@@ -11,6 +11,52 @@ static bool try_parse_fn_ptr_declarator(Parser *p, Type *ret_type, const char **
 static bool try_parse_member_ptr_declarator(Parser *p, Type *member_type, const char **out_name, Type **out_type);
 static ASTNode *parse_class_declaration(Parser *p, bool is_struct);
 
+static int64_t eval_integer_constant(ASTNode *node, bool *ok) {
+    if (!node) { *ok = false; return 0; }
+    if (node->kind == AST_LIT_INT) return node->int_val;
+    if (node->kind == AST_CAST) return eval_integer_constant(node->cast.expr, ok);
+    if (node->kind == AST_UNARY) {
+        int64_t value = eval_integer_constant(node->unary.operand, ok);
+        if (!*ok) return 0;
+        if (node->unary.op == TOK_MINUS) return -value;
+        if (node->unary.op == TOK_PLUS) return value;
+        if (node->unary.op == TOK_TILDE) return ~value;
+        if (node->unary.op == TOK_EXCL) return !value;
+    }
+    if (node->kind == AST_BINARY) {
+        int64_t left = eval_integer_constant(node->binary.left, ok);
+        int64_t right = eval_integer_constant(node->binary.right, ok);
+        if (!*ok) return 0;
+        switch (node->binary.op) {
+            case TOK_PLUS: return left + right;
+            case TOK_MINUS: return left - right;
+            case TOK_STAR: return left * right;
+            case TOK_SLASH: if (right) return left / right; break;
+            case TOK_PERCENT: if (right) return left % right; break;
+            case TOK_SHL: return left << right;
+            case TOK_SHR: return left >> right;
+            case TOK_AMP: return left & right;
+            case TOK_PIPE: return left | right;
+            case TOK_CARET: return left ^ right;
+            default: break;
+        }
+    }
+    *ok = false;
+    return 0;
+}
+
+static size_t parse_array_bound(Parser *p) {
+    if (p->current.kind == TOK_RBRACKET) return 0;
+    ASTNode *bound = parse_expression(p);
+    bool ok = true;
+    int64_t value = eval_integer_constant(bound, &ok);
+    if (!ok || value < 0) {
+        diag_report(DIAG_ERROR, bound->loc, "array bound must be a non-negative integer constant");
+        return 0;
+    }
+    return (size_t)value;
+}
+
 static void advance(Parser *p) {
     p->current = p->peek;
     p->peek = lexer_next(&p->lexer);
@@ -187,22 +233,12 @@ static void skip_attributes_and_asm(Parser *p) {
     }
 }
 
-static bool is_type_specifier(Parser *p) {
-    TokenKind k = p->current.kind;
-    return k == TOK_KW_VOID || k == TOK_KW_BOOL || k == TOK_KW_CHAR ||
-           k == TOK_KW_SHORT || k == TOK_KW_INT || k == TOK_KW_LONG ||
-           k == TOK_KW_SIGNED || k == TOK_KW_UNSIGNED ||
-           k == TOK_KW_FLOAT || k == TOK_KW_DOUBLE || k == TOK_KW_CONST ||
-           k == TOK_KW_VOLATILE || k == TOK_KW_RESTRICT || k == TOK_KW_TYPEOF ||
-           k == TOK_KW_CLASS || k == TOK_KW_STRUCT || k == TOK_IDENT ||
-           k == TOK_KW_EXTENSION || k == TOK_KW_ATTRIBUTE;
-}
-
 static bool is_declaration_starting(Parser *p) {
     TokenKind k = p->current.kind;
     if (k == TOK_KW_CONST || k == TOK_KW_VOLATILE || k == TOK_KW_RESTRICT ||
         k == TOK_KW_SIGNED || k == TOK_KW_UNSIGNED || k == TOK_KW_EXTENSION ||
-        k == TOK_KW_ATTRIBUTE || k == TOK_KW_TYPEOF) return true;
+        k == TOK_KW_ATTRIBUTE || k == TOK_KW_TYPEOF || k == TOK_KW_STATIC ||
+        k == TOK_KW_EXTERN) return true;
     if (k == TOK_KW_VOID || k == TOK_KW_BOOL || k == TOK_KW_CHAR ||
         k == TOK_KW_SHORT || k == TOK_KW_INT || k == TOK_KW_LONG ||
         k == TOK_KW_FLOAT || k == TOK_KW_DOUBLE ||
@@ -225,7 +261,9 @@ static bool is_declaration_starting(Parser *p) {
                 advance(p);
             }
         }
-        while (p->current.kind == TOK_STAR || p->current.kind == TOK_AMP) {
+        while (p->current.kind == TOK_STAR || p->current.kind == TOK_AMP ||
+               p->current.kind == TOK_KW_CONST || p->current.kind == TOK_KW_VOLATILE ||
+               p->current.kind == TOK_KW_RESTRICT) {
             advance(p);
         }
         bool is_decl = (p->current.kind == TOK_IDENT || p->current.kind == TOK_KW_OPERATOR ||
@@ -754,7 +792,11 @@ static Type *parse_type(Parser *p) {
         return g_type_int;
     }
 
-    skip_gnu_attributes(p);
+    /* C permits qualifiers after a typedef name: "code const *". */
+    while (match(p, TOK_KW_CONST) || match(p, TOK_KW_VOLATILE) ||
+           match(p, TOK_KW_RESTRICT) || check(p, TOK_KW_ATTRIBUTE)) {
+        if (check(p, TOK_KW_ATTRIBUTE)) skip_gnu_attributes(p);
+    }
 
     /* Pointers and References: int**, int& */
     while (check(p, TOK_STAR) || check(p, TOK_AMP)) {
@@ -1223,6 +1265,18 @@ static bool is_assign_op(TokenKind kind) {
 static ASTNode *parse_assignment(Parser *p) {
     ASTNode *expr = parse_binary_expr(p, 0);
 
+    if (match(p, TOK_QUESTION)) {
+        SourceLoc loc = expr->loc;
+        ASTNode *then_expr = parse_expression(p);
+        expect(p, TOK_COLON, "':' in conditional expression");
+        ASTNode *else_expr = parse_assignment(p);
+        ASTNode *conditional = ast_new(p->arena, AST_CONDITIONAL, loc);
+        conditional->conditional.cond = expr;
+        conditional->conditional.then_expr = then_expr;
+        conditional->conditional.else_expr = else_expr;
+        expr = conditional;
+    }
+
     if (is_assign_op(p->current.kind)) {
         TokenKind op = p->current.kind;
         SourceLoc loc = p->current.loc;
@@ -1240,7 +1294,30 @@ static ASTNode *parse_assignment(Parser *p) {
 }
 
 static ASTNode *parse_expression(Parser *p) {
-    return parse_assignment(p);
+    ASTNode *expr = parse_assignment(p);
+    while (match(p, TOK_COMMA)) {
+        ASTNode *comma = ast_new(p->arena, AST_COMMA, expr->loc);
+        comma->comma.left = expr;
+        comma->comma.right = parse_assignment(p);
+        expr = comma;
+    }
+    return expr;
+}
+
+static ASTNode *parse_initializer(Parser *p) {
+    if (!match(p, TOK_LBRACE)) return parse_assignment(p);
+    SourceLoc loc = p->current.loc;
+    ASTNode **items = NULL;
+    int count = 0, capacity = 0;
+    while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+        append_node(p, &items, &count, &capacity, parse_initializer(p));
+        if (!match(p, TOK_COMMA)) break;
+    }
+    expect(p, TOK_RBRACE, "'}' after initializer list");
+    ASTNode *list = ast_new(p->arena, AST_INIT_LIST, loc);
+    list->init_list.items = items;
+    list->init_list.count = count;
+    return list;
 }
 
 /* Statement parsing */
@@ -1265,6 +1342,14 @@ static ASTNode *parse_block(Parser *p) {
 
 static ASTNode *parse_statement(Parser *p) {
     SourceLoc loc = p->current.loc;
+
+    if (check(p, TOK_IDENT) && p->peek.kind == TOK_COLON) {
+        ASTNode *stmt = ast_new(p->arena, AST_STMT_LABEL, loc);
+        stmt->named_stmt.name = p->current.str_val;
+        advance(p);
+        expect(p, TOK_COLON, "':' after label");
+        return stmt;
+    }
 
     if (match(p, TOK_SEMICOLON)) {
         return ast_new(p->arena, AST_STMT_EXPR, loc);
@@ -1310,18 +1395,71 @@ static ASTNode *parse_statement(Parser *p) {
         return stmt;
     }
 
+    if (match(p, TOK_KW_DO)) {
+        ASTNode *body = parse_statement(p);
+        expect(p, TOK_KW_WHILE, "'while' after do body");
+        expect(p, TOK_LPAREN, "'(' after 'while'");
+        ASTNode *cond = parse_expression(p);
+        expect(p, TOK_RPAREN, "')' after do-while condition");
+        expect(p, TOK_SEMICOLON, "';' after do-while");
+        ASTNode *stmt = ast_new(p->arena, AST_STMT_DO_WHILE, loc);
+        stmt->while_stmt.cond = cond;
+        stmt->while_stmt.body = body;
+        return stmt;
+    }
+
+    if (match(p, TOK_KW_SWITCH)) {
+        expect(p, TOK_LPAREN, "'(' after 'switch'");
+        ASTNode *value = parse_expression(p);
+        expect(p, TOK_RPAREN, "')' after switch expression");
+        expect(p, TOK_LBRACE, "'{' after switch expression");
+        ASTNode **cases = NULL;
+        int case_count = 0, case_capacity = 0;
+        while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+            SourceLoc case_loc = p->current.loc;
+            ASTNode *case_value = NULL;
+            if (match(p, TOK_KW_CASE)) {
+                case_value = parse_assignment(p);
+                expect(p, TOK_COLON, "':' after case value");
+            } else if (match(p, TOK_KW_DEFAULT)) {
+                expect(p, TOK_COLON, "':' after default");
+            } else {
+                diag_report(DIAG_ERROR, p->current.loc, "expected 'case' or 'default' in switch");
+                advance(p);
+                continue;
+            }
+            ASTNode **stmts = NULL;
+            int count = 0, capacity = 0;
+            while (!check(p, TOK_KW_CASE) && !check(p, TOK_KW_DEFAULT) &&
+                   !check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+                append_node(p, &stmts, &count, &capacity, parse_statement(p));
+            }
+            ASTNode *case_node = ast_new(p->arena, AST_STMT_CASE, case_loc);
+            case_node->case_stmt.value = case_value;
+            case_node->case_stmt.stmts = stmts;
+            case_node->case_stmt.count = count;
+            append_node(p, &cases, &case_count, &case_capacity, case_node);
+        }
+        expect(p, TOK_RBRACE, "'}' after switch");
+        ASTNode *stmt = ast_new(p->arena, AST_STMT_SWITCH, loc);
+        stmt->switch_stmt.expr = value;
+        stmt->switch_stmt.cases = cases;
+        stmt->switch_stmt.case_count = case_count;
+        return stmt;
+    }
+
     if (match(p, TOK_KW_FOR)) {
         expect(p, TOK_LPAREN, "'(' after 'for'");
         ASTNode *init = NULL;
         if (!match(p, TOK_SEMICOLON)) {
-            if (is_type_specifier(p)) {
+            if (is_declaration_starting(p)) {
                 Type *t = parse_type(p);
                 Token name_tok = expect(p, TOK_IDENT, "variable name in for loop init");
                 ASTNode *var = ast_new(p->arena, AST_STMT_VAR_DECL, loc);
                 var->var_decl.var_type = t;
                 var->var_decl.name = name_tok.str_val;
                 if (match(p, TOK_ASSIGN)) {
-                    var->var_decl.init = parse_expression(p);
+                    var->var_decl.init = parse_initializer(p);
                 }
                 expect(p, TOK_SEMICOLON, "';' after for init");
                 init = var;
@@ -1358,6 +1496,14 @@ static ASTNode *parse_statement(Parser *p) {
     if (match(p, TOK_KW_CONTINUE)) {
         expect(p, TOK_SEMICOLON, "';' after continue");
         return ast_new(p->arena, AST_STMT_CONTINUE, loc);
+    }
+
+    if (match(p, TOK_KW_GOTO)) {
+        Token label = expect(p, TOK_IDENT, "label after goto");
+        expect(p, TOK_SEMICOLON, "';' after goto");
+        ASTNode *stmt = ast_new(p->arena, AST_STMT_GOTO, loc);
+        stmt->named_stmt.name = label.str_val;
+        return stmt;
     }
 
     if (match(p, TOK_KW_USING)) {
@@ -1404,6 +1550,8 @@ static ASTNode *parse_statement(Parser *p) {
 
     /* Variable declaration inside statement: Type name [= init]; or Type name(args); */
     if (is_declaration_starting(p)) {
+        bool is_static = match(p, TOK_KW_STATIC);
+        bool is_extern = match(p, TOK_KW_EXTERN);
         Type *t = parse_type(p);
         const char *var_name = NULL;
         Type *fn_ptr_t = NULL;
@@ -1417,11 +1565,7 @@ static ASTNode *parse_statement(Parser *p) {
             Token name_tok = expect(p, TOK_IDENT, "variable name");
             var_name = name_tok.str_val;
             if (match(p, TOK_LBRACKET)) {
-                size_t arr_size = 0;
-                if (check(p, TOK_INT_LIT)) {
-                    arr_size = (size_t)p->current.int_val;
-                    advance(p);
-                }
+                size_t arr_size = parse_array_bound(p);
                 expect(p, TOK_RBRACKET, "']' in array variable");
                 t = type_array(p->arena, t, arr_size);
             }
@@ -1429,6 +1573,8 @@ static ASTNode *parse_statement(Parser *p) {
         ASTNode *var = ast_new(p->arena, AST_STMT_VAR_DECL, loc);
         var->var_decl.var_type = t;
         var->var_decl.name = var_name;
+        var->var_decl.is_static = is_static;
+        var->var_decl.is_extern = is_extern;
 
         /* Check for constructor call: Point p(1, 2); */
         if (!is_fn_ptr && match(p, TOK_LPAREN)) {
@@ -1449,11 +1595,31 @@ static ASTNode *parse_statement(Parser *p) {
             ctor_call->new_expr.arg_count = arg_count;
             var->var_decl.init = ctor_call;
         } else if (match(p, TOK_ASSIGN)) {
-            var->var_decl.init = parse_expression(p);
+            var->var_decl.init = parse_initializer(p);
         }
 
+        if (!match(p, TOK_COMMA)) {
+            expect(p, TOK_SEMICOLON, "';' after variable declaration");
+            return var;
+        }
+        ASTNode **decls = NULL;
+        int count = 0, capacity = 0;
+        append_node(p, &decls, &count, &capacity, var);
+        do {
+            Token next_name = expect(p, TOK_IDENT, "variable name after ','");
+            ASTNode *next = ast_new(p->arena, AST_STMT_VAR_DECL, next_name.loc);
+            next->var_decl.var_type = t;
+            next->var_decl.name = next_name.str_val;
+            next->var_decl.is_static = is_static;
+            next->var_decl.is_extern = is_extern;
+            if (match(p, TOK_ASSIGN)) next->var_decl.init = parse_initializer(p);
+            append_node(p, &decls, &count, &capacity, next);
+        } while (match(p, TOK_COMMA));
         expect(p, TOK_SEMICOLON, "';' after variable declaration");
-        return var;
+        ASTNode *list = ast_new(p->arena, AST_STMT_DECL_LIST, loc);
+        list->block.stmts = decls;
+        list->block.count = count;
+        return list;
     }
 
     /* Expression statement */
@@ -1848,11 +2014,7 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
         } else {
             /* Array field: int data[4]; */
             if (match(p, TOK_LBRACKET)) {
-                size_t arr_size = 0;
-                if (check(p, TOK_INT_LIT)) {
-                    arr_size = (size_t)p->current.int_val;
-                    advance(p);
-                }
+                size_t arr_size = parse_array_bound(p);
                 expect(p, TOK_RBRACKET, "']' in array field");
                 t = type_array(p->arena, t, arr_size);
             }
@@ -1984,6 +2146,49 @@ static ASTNode *parse_declaration(Parser *p) {
     if (match(p, TOK_KW_TYPEDEF)) {
         SourceLoc loc = p->current.loc;
         skip_attributes_and_asm(p);
+        if (match(p, TOK_KW_ENUM)) {
+            if (check(p, TOK_IDENT) && p->peek.kind == TOK_LBRACE) advance(p);
+            expect(p, TOK_LBRACE, "'{' in enum definition");
+            const char *names[256];
+            int64_t values[256];
+            int count = 0;
+            int64_t next_value = 0;
+            while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+                Token item = expect(p, TOK_IDENT, "enumerator name");
+                int64_t value = next_value;
+                if (match(p, TOK_ASSIGN)) {
+                    bool negative = match(p, TOK_MINUS);
+                    if (check(p, TOK_INT_LIT)) {
+                        value = negative ? -p->current.int_val : p->current.int_val;
+                        advance(p);
+                    } else {
+                        /* ponytail: use the shared constant-expression evaluator when a corpus needs non-literals. */
+                        diag_report(DIAG_ERROR, p->current.loc, "enum value must currently be an integer literal");
+                        parse_assignment(p);
+                    }
+                }
+                if (count < 256) {
+                    names[count] = item.str_val;
+                    values[count++] = value;
+                }
+                next_value = value + 1;
+                if (!match(p, TOK_COMMA)) break;
+            }
+            expect(p, TOK_RBRACE, "'}' after enum definition");
+            Token alias = expect(p, TOK_IDENT, "enum typedef name");
+            expect(p, TOK_SEMICOLON, "';' after enum typedef");
+            ASTNode *decl = ast_new(p->arena, AST_DECL_ENUM, loc);
+            decl->enum_decl.name = alias.str_val;
+            decl->enum_decl.count = count;
+            if (count > 0) {
+                decl->enum_decl.item_names = arena_alloc(p->arena, sizeof(char *) * (size_t)count);
+                decl->enum_decl.item_values = arena_alloc(p->arena, sizeof(int64_t) * (size_t)count);
+                memcpy(decl->enum_decl.item_names, names, sizeof(char *) * (size_t)count);
+                memcpy(decl->enum_decl.item_values, values, sizeof(int64_t) * (size_t)count);
+            }
+            parser_add_type(p, alias.str_val);
+            return decl;
+        }
         if (check(p, TOK_KW_STRUCT) || check(p, TOK_KW_CLASS)) {
             bool is_struct = (p->current.kind == TOK_KW_STRUCT);
             advance(p); /* Consume 'struct' or 'class' */
@@ -2147,8 +2352,12 @@ static ASTNode *parse_declaration(Parser *p) {
 
     /* Normal function or out-of-line method with return type */
     bool is_extern = false;
-    while (match(p, TOK_KW_EXTERN) || match(p, TOK_KW_STATIC) || match(p, TOK_KW_INLINE) || match(p, TOK_KW_EXTENSION)) {
-        is_extern = true;
+    bool is_static = false;
+    while (check(p, TOK_KW_EXTERN) || check(p, TOK_KW_STATIC) ||
+           check(p, TOK_KW_INLINE) || check(p, TOK_KW_EXTENSION)) {
+        if (match(p, TOK_KW_EXTERN)) is_extern = true;
+        else if (match(p, TOK_KW_STATIC)) is_static = true;
+        else advance(p);
     }
     skip_attributes_and_asm(p);
 
@@ -2164,7 +2373,7 @@ static ASTNode *parse_declaration(Parser *p) {
         var->var_decl.var_type = fn_ptr_t;
         var->var_decl.name = fn_ptr_name;
         if (match(p, TOK_ASSIGN)) {
-            var->var_decl.init = parse_expression(p);
+            var->var_decl.init = parse_initializer(p);
         }
         expect(p, TOK_SEMICOLON, "';' after global variable declaration");
         return var;
@@ -2216,28 +2425,47 @@ static ASTNode *parse_declaration(Parser *p) {
         fn->func_decl.is_method = is_method;
         fn->func_decl.is_varargs = is_va;
         fn->func_decl.is_extern = is_extern;
+        fn->func_decl.is_static = is_static;
         fn->func_decl.is_operator = is_op;
         return fn;
     }
 
     /* Global variable declaration */
     if (match(p, TOK_LBRACKET)) {
-        size_t arr_size = 0;
-        if (check(p, TOK_INT_LIT)) {
-            arr_size = (size_t)p->current.int_val;
-            advance(p);
-        }
+        size_t arr_size = parse_array_bound(p);
         expect(p, TOK_RBRACKET, "']' in global array variable");
         ret_type = type_array(p->arena, ret_type, arr_size);
     }
     ASTNode *var = ast_new(p->arena, AST_STMT_VAR_DECL, loc);
     var->var_decl.var_type = ret_type;
     var->var_decl.name = fn_name;
+    var->var_decl.is_extern = is_extern;
+    var->var_decl.is_static = is_static;
     if (match(p, TOK_ASSIGN)) {
-        var->var_decl.init = parse_expression(p);
+        var->var_decl.init = parse_initializer(p);
     }
+    if (!match(p, TOK_COMMA)) {
+        expect(p, TOK_SEMICOLON, "';' after global variable declaration");
+        return var;
+    }
+    ASTNode **decls = NULL;
+    int count = 0, capacity = 0;
+    append_node(p, &decls, &count, &capacity, var);
+    do {
+        Token next_name = expect(p, TOK_IDENT, "variable name after ','");
+        ASTNode *next = ast_new(p->arena, AST_STMT_VAR_DECL, next_name.loc);
+        next->var_decl.var_type = ret_type;
+        next->var_decl.name = next_name.str_val;
+        next->var_decl.is_extern = is_extern;
+        next->var_decl.is_static = is_static;
+        if (match(p, TOK_ASSIGN)) next->var_decl.init = parse_initializer(p);
+        append_node(p, &decls, &count, &capacity, next);
+    } while (match(p, TOK_COMMA));
     expect(p, TOK_SEMICOLON, "';' after global variable declaration");
-    return var;
+    ASTNode *list = ast_new(p->arena, AST_STMT_DECL_LIST, loc);
+    list->block.stmts = decls;
+    list->block.count = count;
+    return list;
 }
 
 ASTNode *parser_parse(Parser *p) {

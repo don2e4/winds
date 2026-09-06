@@ -15,5 +15,7 @@ extern int fclose(void *stream);
 extern int fflush(void *stream);
 extern size_t fread(void *ptr, size_t size, size_t nmemb, void *stream);
 extern size_t fwrite(const void *ptr, size_t size, size_t nmemb, void *stream);
+extern int snprintf(char *s, size_t n, const char *format, ...);
+extern int vsnprintf(char *s, size_t n, const char *format, void *args);
 
 #endif

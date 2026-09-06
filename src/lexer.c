@@ -138,6 +138,54 @@ MacroDef *find_macro(Lexer *l, const char *name) {
     return NULL;
 }
 
+void lexer_undefine_macro(Lexer *l, const char *name) {
+    MacroDef *macro = find_macro(l, name);
+    if (!macro) return;
+    macro->name = NULL;
+    if (macro->params) {
+        free((void *)macro->params);
+        macro->params = NULL;
+    }
+}
+
+bool lexer_define_object_macro(Lexer *l, const char *definition) {
+    if (!definition || !*definition) return false;
+
+    const char *eq = strchr(definition, '=');
+    size_t name_len = eq ? (size_t)(eq - definition) : strlen(definition);
+    if (name_len == 0 || name_len >= 128 ||
+        !(isalpha((unsigned char)definition[0]) || definition[0] == '_')) {
+        return false;
+    }
+    for (size_t i = 1; i < name_len; i++) {
+        if (!(isalnum((unsigned char)definition[i]) || definition[i] == '_')) return false;
+    }
+
+    char name[128];
+    memcpy(name, definition, name_len);
+    name[name_len] = '\0';
+    MacroDef *macro = find_macro(l, name);
+    if (!macro) {
+        for (int i = 0; i < l->macro_def_count; i++) {
+            if (!l->macro_defs[i].name) {
+                macro = &l->macro_defs[i];
+                break;
+            }
+        }
+    }
+    if (!macro) {
+        if (l->macro_def_count >= MAX_MACRO_DEFS) return false;
+        macro = &l->macro_defs[l->macro_def_count++];
+    }
+
+    *macro = (MacroDef){
+        .name = str_intern(name),
+        .body = str_intern(eq ? eq + 1 : "1"),
+        .is_active = true
+    };
+    return true;
+}
+
 static bool is_macro_active(Lexer *l, const char *name) {
     if (!name) return false;
     for (int d = 1; d <= l->depth; d++) {
@@ -1823,6 +1871,7 @@ static Token scan_identifier_or_keyword(Lexer *l, SourceLoc loc) {
     /* Check keywords */
     if (strcmp(name, "class") == 0) tok.kind = TOK_KW_CLASS;
     else if (strcmp(name, "struct") == 0) tok.kind = TOK_KW_STRUCT;
+    else if (strcmp(name, "enum") == 0) tok.kind = TOK_KW_ENUM;
     else if (strcmp(name, "public") == 0) tok.kind = TOK_KW_PUBLIC;
     else if (strcmp(name, "private") == 0) tok.kind = TOK_KW_PRIVATE;
     else if (strcmp(name, "protected") == 0) tok.kind = TOK_KW_PROTECTED;
@@ -1837,8 +1886,12 @@ static Token scan_identifier_or_keyword(Lexer *l, SourceLoc loc) {
     else if (strcmp(name, "while") == 0) tok.kind = TOK_KW_WHILE;
     else if (strcmp(name, "for") == 0) tok.kind = TOK_KW_FOR;
     else if (strcmp(name, "do") == 0) tok.kind = TOK_KW_DO;
+    else if (strcmp(name, "switch") == 0) tok.kind = TOK_KW_SWITCH;
+    else if (strcmp(name, "case") == 0) tok.kind = TOK_KW_CASE;
+    else if (strcmp(name, "default") == 0) tok.kind = TOK_KW_DEFAULT;
     else if (strcmp(name, "break") == 0) tok.kind = TOK_KW_BREAK;
     else if (strcmp(name, "continue") == 0) tok.kind = TOK_KW_CONTINUE;
+    else if (strcmp(name, "goto") == 0) tok.kind = TOK_KW_GOTO;
     else if (strcmp(name, "sizeof") == 0) tok.kind = TOK_KW_SIZEOF;
     else if (strcmp(name, "operator") == 0) tok.kind = TOK_KW_OPERATOR;
     else if (strcmp(name, "typedef") == 0) tok.kind = TOK_KW_TYPEDEF;
@@ -2101,6 +2154,7 @@ const char *token_kind_str(TokenKind kind) {
         case TOK_STR_LIT: return "string literal";
         case TOK_KW_CLASS: return "class";
         case TOK_KW_STRUCT: return "struct";
+        case TOK_KW_ENUM: return "enum";
         case TOK_KW_PUBLIC: return "public";
         case TOK_KW_PRIVATE: return "private";
         case TOK_KW_PROTECTED: return "protected";
@@ -2115,8 +2169,12 @@ const char *token_kind_str(TokenKind kind) {
         case TOK_KW_WHILE: return "while";
         case TOK_KW_FOR: return "for";
         case TOK_KW_DO: return "do";
+        case TOK_KW_SWITCH: return "switch";
+        case TOK_KW_CASE: return "case";
+        case TOK_KW_DEFAULT: return "default";
         case TOK_KW_BREAK: return "break";
         case TOK_KW_CONTINUE: return "continue";
+        case TOK_KW_GOTO: return "goto";
         case TOK_KW_SIZEOF: return "sizeof";
         case TOK_KW_OPERATOR: return "operator";
         case TOK_KW_TYPEDEF: return "typedef";

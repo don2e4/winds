@@ -4,7 +4,7 @@
 static void print_help(const char *prog_name) {
     printf("winds - Lightweight, Fast, Native C++ Compiler\n\n");
     printf("USAGE:\n");
-    printf("  %s [options] <input.cpp>\n\n", prog_name);
+    printf("  %s [options] <inputs...>\n\n", prog_name);
     printf("OPTIONS:\n");
     printf("  -o <file>      Place the output into <file>\n");
     printf("  -S             Compile only; do not assemble or link (generate .s)\n");
@@ -13,6 +13,9 @@ static void print_help(const char *prog_name) {
     printf("  --emit-ast     Dump the parsed Abstract Syntax Tree\n");
     printf("  --emit-ir      Dump the 3-Address Code Intermediate Representation\n");
     printf("  -I <dir>                 Add directory to header include search path\n");
+    printf("  -D<name>[=<value>]       Define a preprocessor macro\n");
+    printf("  -U<name>                 Undefine a preprocessor macro\n");
+    printf("  -L<dir>, -l<name>        Add linker search path or library\n");
     printf("  --target=<triple>        Specify target architecture triple (default: x86_64-linux-gnu)\n");
     printf("  --sysroot=<path>         Specify system root directory for headers and libraries\n");
     printf("  --cross-prefix=<prefix>  Specify cross-toolchain prefix (e.g. x86_64-linux-gnu-)\n");
@@ -32,6 +35,15 @@ static void print_version(void) {
     printf("winds version %s (x86_64-linux)\n", WINDS_VERSION);
     printf("Target: x86_64-unknown-linux-gnu\n");
     printf("Thread model: posix\n");
+}
+
+static bool has_suffix(const char *path, const char *suffix) {
+    size_t path_len = strlen(path), suffix_len = strlen(suffix);
+    return path_len >= suffix_len && strcmp(path + path_len - suffix_len, suffix) == 0;
+}
+
+static bool is_link_input(const char *path) {
+    return has_suffix(path, ".o") || has_suffix(path, ".a") || has_suffix(path, ".so");
 }
 
 int main(int argc, char **argv) {
@@ -135,6 +147,47 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "winds: error: missing argument to '-o'\n");
                 return 1;
             }
+        } else if (strncmp(arg, "-D", 2) == 0) {
+            const char *definition = arg[2] ? arg + 2 : (i + 1 < argc ? argv[++i] : NULL);
+            if (!definition) {
+                fprintf(stderr, "winds: error: missing argument to '-D'\n");
+                return 1;
+            }
+            if (config.define_count >= MAX_DRIVER_OPTIONS) {
+                fprintf(stderr, "winds: error: too many macro definitions\n");
+                return 1;
+            }
+            config.defines[config.define_count++] = definition;
+        } else if (strncmp(arg, "-U", 2) == 0) {
+            const char *name = arg[2] ? arg + 2 : (i + 1 < argc ? argv[++i] : NULL);
+            if (!name) {
+                fprintf(stderr, "winds: error: missing argument to '-U'\n");
+                return 1;
+            }
+            if (config.undefine_count >= MAX_DRIVER_OPTIONS) {
+                fprintf(stderr, "winds: error: too many macro undefinitions\n");
+                return 1;
+            }
+            config.undefines[config.undefine_count++] = name;
+        } else if (strncmp(arg, "-L", 2) == 0 || strncmp(arg, "-l", 2) == 0) {
+            if (config.link_arg_count >= MAX_DRIVER_OPTIONS - 1) {
+                fprintf(stderr, "winds: error: too many linker options\n");
+                return 1;
+            }
+            config.link_args[config.link_arg_count++] = arg;
+            if (!arg[2]) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "winds: error: missing argument to '%s'\n", arg);
+                    return 1;
+                }
+                config.link_args[config.link_arg_count++] = argv[++i];
+            }
+        } else if (strncmp(arg, "-Wl,", 4) == 0) {
+            if (config.link_arg_count >= MAX_DRIVER_OPTIONS) {
+                fprintf(stderr, "winds: error: too many linker options\n");
+                return 1;
+            }
+            config.link_args[config.link_arg_count++] = arg;
         } else if (strncmp(arg, "-I", 2) == 0 || strncmp(arg, "-i", 2) == 0) {
             const char *inc_path = NULL;
             if (arg[2] != '\0') {
@@ -152,8 +205,15 @@ int main(int argc, char **argv) {
             fprintf(stderr, "winds: error: unrecognized command-line option '%s'\n", arg);
             return 1;
         } else {
-            if (!config.input_file) {
-                config.input_file = arg;
+            if (is_link_input(arg)) {
+                if (config.link_input_count >= MAX_DRIVER_INPUTS) {
+                    fprintf(stderr, "winds: error: too many linker inputs\n");
+                    return 1;
+                }
+                config.link_inputs[config.link_input_count++] = arg;
+            } else if (config.input_file_count < MAX_DRIVER_INPUTS) {
+                config.input_files[config.input_file_count++] = arg;
+                if (!config.input_file) config.input_file = arg;
                 if (config.run_mode) {
                     /* All remaining CLI tokens are forwarded to the script */
                     config.run_argc = argc - (i + 1);
@@ -161,7 +221,7 @@ int main(int argc, char **argv) {
                     break;
                 }
             } else {
-                fprintf(stderr, "winds: error: multiple input files are not supported in single invocation\n");
+                fprintf(stderr, "winds: error: too many source files\n");
                 return 1;
             }
         }
@@ -172,5 +232,5 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    return driver_run(&config);
+    return driver_run_many(&config);
 }

@@ -1,5 +1,5 @@
 CC ?= gcc
-CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Wno-unused-parameter -MMD -MP -O2 -g -Iinclude
+CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Wno-unused-parameter -MMD -MP -O2 -Iinclude
 BIN_DIR = bin
 BUILD_DIR = build
 
@@ -23,7 +23,7 @@ INSTALL_BIN ?= $(PREFIX)/bin
 OBJS = $(SRCS:src/%.c=$(BUILD_DIR)/%.o)
 TARGET = $(BIN_DIR)/winds
 
-.PHONY: all clean test benchmark install uninstall
+.PHONY: all clean test corpus-test benchmark benchmark-gate install uninstall
 
 all: $(TARGET)
 
@@ -78,10 +78,20 @@ test: $(TARGET)
 	@tests/18_macros.out >/dev/null && echo "  [PASS] 18_macros"
 	@$(TARGET) tests/19_variadic_templates.cpp -o tests/19_variadic_templates.out
 	@tests/19_variadic_templates.out >/dev/null && echo "  [PASS] 19_variadic_templates"
+	@WINDS=$(TARGET) bash tests/20_multifile.sh && echo "  [PASS] 20_multifile"
+	@$(TARGET) tests/21_c_compat.c -o tests/21_c_compat.out
+	@tests/21_c_compat.out && echo "  [PASS] 21_c_compat"
 	@echo "All tests passed successfully!"
+
+corpus-test: $(TARGET)
+	@bash tests/corpus.sh
 
 benchmark: $(TARGET)
 	@python3 tests/benchmark.py $(TARGET)
+
+benchmark-gate: $(TARGET)
+	@test -n "$(BASELINE)" || (echo "usage: make benchmark-gate BASELINE=/path/to/winds"; exit 2)
+	@python3 tests/benchmark.py --baseline "$(BASELINE)" --max-regression 10 $(TARGET)
 
 install: $(TARGET)
 	mkdir -p $(INSTALL_BIN)

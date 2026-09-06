@@ -11,8 +11,8 @@
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/license-mit-7aa2f7.svg" alt="license" /></a>
   <a href="#benchmarks"><img src="https://img.shields.io/badge/compile_time-0.53_ms-9ece6a.svg" alt="speed" /></a>
-  <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-801_kb-e0af68.svg" alt="size" /></a>
-  <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-19_passing-9ece6a.svg" alt="tests" /></a>
+  <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-255_kb-e0af68.svg" alt="size" /></a>
+  <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-21_passing-9ece6a.svg" alt="tests" /></a>
 </p>
 
 ---
@@ -49,7 +49,7 @@ benchmarks measured on x86_64 linux across 20 iterations:
 | metric | clang++ (llvm 22.1) | winds | advantage |
 |---|:---|:---|:---|
 | **frontend + codegen (`-s`)** | `11.67 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `0.53 ms` &nbsp; ▰ | **~22x faster** |
-| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `801 kb` &nbsp; ▰ | **~251x lighter** |
+| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `255 kb` &nbsp; ▰ | **~787x lighter** |
 | **runtime dependencies** | libllvm, libclang-cpp, libc++ | glibc only | **100% self-contained** |
 | **memory teardown** | recursive reference counting | contiguous bump arena | **instant constant-time exit** |
 
@@ -68,7 +68,7 @@ modern compilers often feel sluggish because they carry decades of legacy interm
 
 - **bump arena allocation**: all abstract syntax tree nodes, symbol entries, and intermediate instructions live in contiguous 128 kb blocks. memory allocations take a single pointer bump with zero lock contention, and process cleanup takes one single free call.
 - **linear scan register allocator**: instead of costly graph coloring algorithms with complex spill-reloading passes, winds runs a fast linear scan over live intervals with loop extension and automatic callee-saved register tracking.
-- **zero llvm dependencies**: no massive shared libraries to load into memory on each invocation. the entire compiler binary is only 801 kb.
+- **zero llvm dependencies**: no massive shared libraries to load into memory on each invocation. the entire compiler binary is only 255 kb.
 - **direct native code emission**: the intermediate representation lowers straight to system v amd64 assembly without intermediate serialization steps.
 
 ## compilation pipeline
@@ -285,6 +285,8 @@ explore the underlying compiler components by expanding the sections below:
 | `-werror` | treat warnings as hard compilation errors |
 | `-o0`, `-o1`, `-o2` | set optimization level (default: `-o1`) |
 | `-i <dir>` | add directory to header search path |
+| `-Dname[=value]`, `-Uname` | define or undefine a preprocessor macro |
+| `-L<dir>`, `-l<name>`, `-Wl,...` | pass library search and linker options |
 | `--target=<triple>` | specify target architecture (default: `x86_64-linux-gnu`) |
 | `--sysroot=<path>` | specify system root directory for headers and libraries |
 | `--cross-prefix=<p>` | specify cross-toolchain binary prefix |
@@ -333,7 +335,7 @@ ctest --test-dir build --output-on-failure
 
 ### test suites
 
-winds includes 19 automated test suites covering syntax, semantics, standard library, and code generation:
+winds includes 21 automated test suites covering syntax, semantics, standard library, and code generation:
 
 - `01_basics.cpp` &mdash; variables, arithmetic precedence, loops, and branches
 - `02_functions.cpp` &mdash; function overloading, pass-by-reference, and recursion
@@ -354,12 +356,19 @@ winds includes 19 automated test suites covering syntax, semantics, standard lib
 - `17_pointers_to_members.cpp` &mdash; pointers to data members and member functions (`.*`, `->*`)
 - `18_macros.cpp` &mdash; parameterized macros, stringification (`#`), token pasting (`##`), `#undef`, `#if`/`#elif`
 - `19_variadic_templates.cpp` &mdash; variadic templates, parameter packs, recursive monomorphization, and standard `<tuple>`
+- `20_multifile.sh` &mdash; multiple translation units, command-line macros, external objects, and C ABI linking
+- `21_c_compat.c` &mdash; C linkage, `do` loops, conditional/comma expressions, and curated C headers
+
+`make corpus-test` checks an unchanged, pinned zlib 1.3.1 translation unit by compiling it with winds, linking it to a gcc-built C harness, and validating its checksum output. Set `ZLIB_SOURCE` to an existing checkout for an offline run.
 
 ## roadmap
 
 - [x] **phase 1**: script execution mode (`-run`), shebang support, makefile dependency tracking (`-mmd`, `-mp`, `-mf`), warning controls (`-wall`, `-wextra`, `-werror`), colored diagnostics
 - [x] **phase 2**: operator overloading, type aliases (`typedef`, `using`), template class monomorphization, 12 self-contained standard library headers (`<iostream>`, `<string>`, `<vector>`, etc.)
 - [x] **phase 3**: function pointers, pointers to members, parameterized preprocessor macros, variadic templates and standard tuple
+- [x] **phase 4a**: multi-file builds, external object/library linking, C linkage, curated libc headers, and the first pinned real-world zlib corpus gate
+- [ ] **phase 4b**: complete the corpus-driven C foundation required by full zlib, cJSON, and SQLite builds
+- [ ] **phase 4c**: compile pugixml without exceptions, RTTI, or the system C++ standard library
 
 ## license
 

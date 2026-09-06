@@ -10,6 +10,7 @@
 #include "codegen_x86.h"
 #include <time.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 static char *read_file_to_string(const char *path, size_t *out_size) {
     FILE *f = fopen(path, "rb");
@@ -48,6 +49,91 @@ static double get_time_ms(void) {
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
 }
 
+static int run_process(char *const argv[], bool verbose) {
+    if (verbose) {
+        fputs("winds: executing:", stdout);
+        for (int i = 0; argv[i]; i++) printf(" %s", argv[i]);
+        fputc('\n', stdout);
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("winds: error: fork");
+        return 1;
+    }
+    if (pid == 0) {
+        execvp(argv[0], argv);
+        perror(argv[0]);
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("winds: error: waitpid");
+        return 1;
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+}
+
+static bool program_exists(const char *name) {
+    if (strchr(name, '/')) return access(name, X_OK) == 0;
+    const char *path = getenv("PATH");
+    if (!path) return false;
+    char *copy = strdup(path);
+    if (!copy) return false;
+    bool found = false;
+    for (char *dir = strtok(copy, ":"); dir; dir = strtok(NULL, ":")) {
+        char candidate[1024];
+        snprintf(candidate, sizeof(candidate), "%s/%s", *dir ? dir : ".", name);
+        if (access(candidate, X_OK) == 0) {
+            found = true;
+            break;
+        }
+    }
+    free(copy);
+    return found;
+}
+
+static void resolve_tools(const DriverConfig *config, char as_bin[256], char gcc_bin[256]) {
+    strcpy(as_bin, "as");
+    strcpy(gcc_bin, "gcc");
+    if (config->cross_prefix && *config->cross_prefix) {
+        snprintf(as_bin, 256, "%sas", config->cross_prefix);
+        snprintf(gcc_bin, 256, "%sgcc", config->cross_prefix);
+    } else if (config->target_triple && *config->target_triple) {
+        char candidate[256];
+        snprintf(candidate, sizeof(candidate), "%s-gcc", config->target_triple);
+        if (program_exists(candidate)) {
+            snprintf(as_bin, 256, "%s-as", config->target_triple);
+            snprintf(gcc_bin, 256, "%s", candidate);
+        } else if (config->verbose) {
+            printf("winds: note: cross toolchain '%s' not found; using host 'gcc'\n", candidate);
+        }
+    }
+}
+
+static int link_files(const DriverConfig *config, const char **files, int file_count,
+                      const char *output) {
+    char as_bin[256], gcc_bin[256], sysroot_arg[1024];
+    resolve_tools(config, as_bin, gcc_bin);
+    (void)as_bin;
+
+    char *argv[2 * MAX_DRIVER_INPUTS + MAX_DRIVER_OPTIONS + 16];
+    int n = 0;
+    argv[n++] = gcc_bin;
+    for (int i = 0; i < file_count; i++) argv[n++] = (char *)files[i];
+    for (int i = 0; i < config->link_input_count; i++) argv[n++] = (char *)config->link_inputs[i];
+    argv[n++] = "-o";
+    argv[n++] = (char *)output;
+    if (config->sysroot && *config->sysroot) {
+        snprintf(sysroot_arg, sizeof(sysroot_arg), "--sysroot=%s", config->sysroot);
+        argv[n++] = sysroot_arg;
+    }
+    argv[n++] = "-no-pie";
+    for (int i = 0; i < config->link_arg_count; i++) argv[n++] = (char *)config->link_args[i];
+    argv[n++] = "-lm";
+    argv[n] = NULL;
+    return run_process(argv, config->verbose);
+}
+
 static bool is_supported_x86_64(const char *triple) {
     if (!triple) return true;
     if (strncmp(triple, "x86_64", 6) == 0 ||
@@ -56,6 +142,11 @@ static bool is_supported_x86_64(const char *triple) {
         return true;
     }
     return false;
+}
+
+static bool is_c_source(const char *path) {
+    size_t len = path ? strlen(path) : 0;
+    return len >= 2 && strcmp(path + len - 2, ".c") == 0;
 }
 
 static void emit_dependency_file(const DriverConfig *config, Lexer *lexer) {
@@ -139,6 +230,19 @@ int driver_run(const DriverConfig *config) {
     /* 1. Parse */
     Parser parser;
     parser_init(&parser, arena, source, config->input_file);
+    for (int i = 0; i < config->undefine_count; i++) {
+        lexer_undefine_macro(&parser.lexer, config->undefines[i]);
+    }
+    for (int i = 0; i < config->define_count; i++) {
+        if (!lexer_define_object_macro(&parser.lexer, config->defines[i])) {
+            fprintf(stderr, "winds: error: invalid macro definition '-D%s'\n", config->defines[i]);
+            parser_destroy(&parser);
+            free(source);
+            arena_destroy(arena);
+            str_intern_destroy();
+            return 1;
+        }
+    }
     for (int i = 0; i < config->include_path_count; i++) {
         parser_add_include_path(&parser, config->include_paths[i]);
     }
@@ -209,6 +313,7 @@ int driver_run(const DriverConfig *config) {
     /* 2. Semantic Analysis */
     Sema sema;
     sema_init(&sema, arena);
+    sema.c_mode = is_c_source(config->input_file);
     sema.warn_unused = config->warn_all || config->warn_extra || config->warnings_as_errors;
     if (!sema_analyze(&sema, ast) || diag_error_count() > 0) {
         fprintf(stderr, "winds: compilation stopped with %d errors during semantic analysis\n", diag_error_count());
@@ -294,38 +399,15 @@ int driver_run(const DriverConfig *config) {
     }
 
     /* Resolve assembler and linker binaries */
-    char as_bin[256] = "as";
-    char gcc_bin[256] = "gcc";
-
-    if (config->cross_prefix && config->cross_prefix[0] != '\0') {
-        snprintf(as_bin, sizeof(as_bin), "%sas", config->cross_prefix);
-        snprintf(gcc_bin, sizeof(gcc_bin), "%sgcc", config->cross_prefix);
-    } else if (config->target_triple && config->target_triple[0] != '\0') {
-        char target_as[256];
-        char target_gcc[256];
-        snprintf(target_as, sizeof(target_as), "%s-as", config->target_triple);
-        snprintf(target_gcc, sizeof(target_gcc), "%s-gcc", config->target_triple);
-
-        char check_cmd[300];
-        snprintf(check_cmd, sizeof(check_cmd), "command -v %s >/dev/null 2>&1", target_gcc);
-        if (system(check_cmd) == 0) {
-            snprintf(as_bin, sizeof(as_bin), "%s", target_as);
-            snprintf(gcc_bin, sizeof(gcc_bin), "%s", target_gcc);
-        } else if (config->verbose) {
-            printf("winds: note: cross toolchain '%s' not found; using host '%s'\n",
-                   target_gcc, gcc_bin);
-        }
-    }
+    char as_bin[256], gcc_bin[256];
+    resolve_tools(config, as_bin, gcc_bin);
+    (void)gcc_bin;
 
     /* 6. Assemble or Link */
     if (config->compile_only) {
         const char *obj_file = config->output_file ? config->output_file : "a.o";
-        char cmd[1024];
-        snprintf(cmd, sizeof(cmd), "%s %s -o %s", as_bin, asm_file, obj_file);
-        if (config->verbose) {
-            printf("winds: executing: %s\n", cmd);
-        }
-        int ret = system(cmd);
+        char *argv[] = {as_bin, (char *)asm_file, "-o", (char *)obj_file, NULL};
+        int ret = run_process(argv, config->verbose);
         if (ret != 0) {
             fprintf(stderr, "winds: error: assembler failed with exit code %d\n", ret);
         } else {
@@ -352,18 +434,8 @@ int driver_run(const DriverConfig *config) {
         out_binary = config->output_file ? config->output_file : "a.out";
     }
 
-    char cmd[1024];
-    if (config->sysroot && config->sysroot[0] != '\0') {
-        snprintf(cmd, sizeof(cmd), "%s %s -o %s --sysroot=%s -no-pie -lm",
-                 gcc_bin, asm_file, out_binary, config->sysroot);
-    } else {
-        snprintf(cmd, sizeof(cmd), "%s %s -o %s -no-pie -lm",
-                 gcc_bin, asm_file, out_binary);
-    }
-    if (config->verbose) {
-        printf("winds: executing: %s\n", cmd);
-    }
-    int ret = system(cmd);
+    const char *link_file = asm_file;
+    int ret = link_files(config, &link_file, 1, out_binary);
     if (ret != 0) {
         fprintf(stderr, "winds: error: linker failed with exit code %d\n", ret);
         if (is_temp_asm) unlink(asm_file);
@@ -382,19 +454,15 @@ int driver_run(const DriverConfig *config) {
     emit_dependency_file(config, &parser.lexer);
 
     if (config->run_mode) {
-        char run_cmd[2048];
-        int written = snprintf(run_cmd, sizeof(run_cmd), "%s", out_binary);
-        for (int i = 0; i < config->run_argc && written < (int)sizeof(run_cmd) - 2; i++) {
-            written += snprintf(run_cmd + written, sizeof(run_cmd) - written, " %s", config->run_argv[i]);
+        char *run_argv[MAX_DRIVER_OPTIONS + 2];
+        int n = 0;
+        run_argv[n++] = (char *)out_binary;
+        for (int i = 0; i < config->run_argc && n < MAX_DRIVER_OPTIONS + 1; i++) {
+            run_argv[n++] = config->run_argv[i];
         }
-        if (config->verbose) {
-            printf("winds: executing script: %s\n", run_cmd);
-        }
-        int script_ret = system(run_cmd);
+        run_argv[n] = NULL;
+        int script_ret = run_process(run_argv, config->verbose);
         unlink(tmp_run_bin);
-        if (script_ret != 0 && (script_ret >> 8) != 0) {
-            script_ret = (script_ret >> 8);
-        }
         ret = script_ret;
     }
 
@@ -407,5 +475,70 @@ int driver_run(const DriverConfig *config) {
     free(source);
     arena_destroy(arena);
     str_intern_destroy();
+    return ret;
+}
+
+static void object_name_for(const char *source, char output[1024]) {
+    const char *base = strrchr(source, '/');
+    base = base ? base + 1 : source;
+    snprintf(output, 1024, "%s", base);
+    char *dot = strrchr(output, '.');
+    if (dot) strcpy(dot, ".o");
+    else strncat(output, ".o", 1023 - strlen(output));
+}
+
+int driver_run_many(const DriverConfig *config) {
+    if (config->input_file_count == 0) {
+        if (config->link_input_count > 0 && !config->compile_only && !config->emit_assembly) {
+            return link_files(config, NULL, 0, config->output_file ? config->output_file : "a.out");
+        }
+        fprintf(stderr, "winds: error: no input file specified\n");
+        return 1;
+    }
+    if (config->input_file_count <= 1) {
+        DriverConfig one = *config;
+        if (one.input_file_count == 1) one.input_file = one.input_files[0];
+        return driver_run(&one);
+    }
+    if (config->emit_assembly || config->emit_ast || config->emit_ir || config->run_mode) {
+        fprintf(stderr, "winds: error: this mode requires exactly one source file\n");
+        return 1;
+    }
+    if (config->compile_only && config->output_file) {
+        fprintf(stderr, "winds: error: cannot use '-o' with '-c' and multiple source files\n");
+        return 1;
+    }
+    if (config->dep_output_file) {
+        fprintf(stderr, "winds: error: cannot use '-MF' with multiple source files\n");
+        return 1;
+    }
+
+    char paths[MAX_DRIVER_INPUTS][1024];
+    const char *objects[MAX_DRIVER_INPUTS];
+    int completed = 0;
+    for (int i = 0; i < config->input_file_count; i++) {
+        DriverConfig unit = *config;
+        unit.input_file = config->input_files[i];
+        unit.input_file_count = 1;
+        unit.link_input_count = 0;
+        unit.link_arg_count = 0;
+        unit.compile_only = true;
+        if (!config->compile_only) unit.gen_dependencies = false;
+        unit.output_file = paths[i];
+        if (config->compile_only) object_name_for(unit.input_file, paths[i]);
+        else snprintf(paths[i], sizeof(paths[i]), "/tmp/winds_%d_%d.o", getpid(), i);
+        objects[i] = paths[i];
+        int ret = driver_run(&unit);
+        if (ret != 0) {
+            if (!config->compile_only) while (completed > 0) unlink(paths[--completed]);
+            return ret;
+        }
+        completed++;
+    }
+    if (config->compile_only) return 0;
+
+    int ret = link_files(config, objects, config->input_file_count,
+                         config->output_file ? config->output_file : "a.out");
+    for (int i = 0; i < completed; i++) unlink(paths[i]);
     return ret;
 }

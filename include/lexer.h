@@ -13,6 +13,7 @@ typedef enum {
     /* Keywords */
     TOK_KW_CLASS,
     TOK_KW_STRUCT,
+    TOK_KW_ENUM,
     TOK_KW_PUBLIC,
     TOK_KW_PRIVATE,
     TOK_KW_PROTECTED,
@@ -27,8 +28,12 @@ typedef enum {
     TOK_KW_WHILE,
     TOK_KW_FOR,
     TOK_KW_DO,
+    TOK_KW_SWITCH,
+    TOK_KW_CASE,
+    TOK_KW_DEFAULT,
     TOK_KW_BREAK,
     TOK_KW_CONTINUE,
+    TOK_KW_GOTO,
     TOK_KW_SIZEOF,
     TOK_KW_OPERATOR,
     TOK_KW_TYPEDEF,
@@ -193,6 +198,8 @@ typedef struct Lexer {
 
 /* Lookup a macro definition by name */
 MacroDef *find_macro(Lexer *l, const char *name);
+bool lexer_define_object_macro(Lexer *l, const char *definition);
+void lexer_undefine_macro(Lexer *l, const char *name);
 
 /* Initialize lexer with source string and filename */
 void lexer_init(Lexer *l, const char *source, const char *filename);

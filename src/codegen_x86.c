@@ -83,7 +83,7 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
     const char *func_name = fn->mangled_name ? fn->mangled_name : fn->name;
 
     fprintf(out, "\n\t.text\n");
-    fprintf(out, "\t.globl\t%s\n", func_name);
+    if (fn->is_global) fprintf(out, "\t.globl\t%s\n", func_name);
     fprintf(out, "\t.type\t%s, @function\n", func_name);
     fprintf(out, "%s:\n", func_name);
     fprintf(out, "\t.cfi_startproc\n");
@@ -408,13 +408,17 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                 break;
 
             case IR_LOAD_GLOBAL:
-                fprintf(out, "\tmovq\t%s(%%rip), %%rax\n", inst->src1.label);
+                if (inst->size == 1) fprintf(out, "\tmovsbq\t%s(%%rip), %%rax\n", inst->src1.label);
+                else if (inst->size == 4) fprintf(out, "\tmovslq\t%s(%%rip), %%rax\n", inst->src1.label);
+                else fprintf(out, "\tmovq\t%s(%%rip), %%rax\n", inst->src1.label);
                 emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_STORE_GLOBAL:
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
-                fprintf(out, "\tmovq\t%%rax, %s(%%rip)\n", inst->dest.label);
+                if (inst->size == 1) fprintf(out, "\tmovb\t%%al, %s(%%rip)\n", inst->dest.label);
+                else if (inst->size == 4) fprintf(out, "\tmovl\t%%eax, %s(%%rip)\n", inst->dest.label);
+                else fprintf(out, "\tmovq\t%%rax, %s(%%rip)\n", inst->dest.label);
                 break;
 
             default:
@@ -463,16 +467,31 @@ bool codegen_x86_emit(IRModule *mod, FILE *out) {
     /* Emit global variables */
     for (IRGlobalVar *g = mod->globals; g != NULL; g = g->next) {
         if (g->is_init) {
+            const char *visibility = g->is_internal ? "" : "\t.globl\t%s\n";
+            if (!g->is_internal) fprintf(out, visibility, g->name);
             if (g->init_label) {
-                fprintf(out, "\t.globl\t%s\n\t.data\n\t.align 8\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n\t.quad\t%s\n",
-                        g->name, g->name, g->name, g->size, g->name, g->init_label);
+                fprintf(out, "\t.data\n\t.align 8\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n\t.quad\t%s\n",
+                        g->name, g->name, g->size, g->name, g->init_label);
+            } else if (g->init_values) {
+                const char *directive = g->elem_size == 1 ? ".byte" :
+                                        g->elem_size == 2 ? ".short" :
+                                        g->elem_size == 4 ? ".long" : ".quad";
+                fprintf(out, "\t.data\n\t.align %d\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n",
+                        g->elem_size, g->name, g->name, g->size, g->name);
+                for (int i = 0; i < g->init_count; i++) {
+                    fprintf(out, "\t%s\t%ld\n", directive, (long)g->init_values[i]);
+                }
+                size_t initialized = (size_t)g->init_count * (size_t)g->elem_size;
+                if (initialized < g->size) fprintf(out, "\t.zero\t%zu\n", g->size - initialized);
             } else {
-                fprintf(out, "\t.globl\t%s\n\t.data\n\t.align 8\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n\t.quad\t%ld\n",
-                        g->name, g->name, g->name, g->size, g->name, (long)g->init_val);
+                const char *directive = g->size == 1 ? ".byte" : g->size == 4 ? ".long" : ".quad";
+                fprintf(out, "\t.data\n\t.align %zu\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n\t%s\t%ld\n",
+                        g->size, g->name, g->name, g->size, g->name, directive, (long)g->init_val);
             }
         } else {
-            fprintf(out, "\t.globl\t%s\n\t.bss\n\t.align 8\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n\t.zero\t%zu\n",
-                    g->name, g->name, g->name, g->size, g->name, g->size);
+            if (!g->is_internal) fprintf(out, "\t.globl\t%s\n", g->name);
+            fprintf(out, "\t.bss\n\t.align 8\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n\t.zero\t%zu\n",
+                    g->name, g->name, g->size, g->name, g->size);
         }
     }
 

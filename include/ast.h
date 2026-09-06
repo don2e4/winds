@@ -107,6 +107,8 @@ typedef enum {
     AST_LIT_NULLPTR,
     AST_VAR_REF,
     AST_BINARY,
+    AST_CONDITIONAL,
+    AST_COMMA,
     AST_UNARY,
     AST_ASSIGN,
     AST_CALL,
@@ -119,21 +121,29 @@ typedef enum {
     AST_INDEX,
     AST_SIZEOF,
     AST_PACK_EXPANSION,
+    AST_INIT_LIST,
 
     /* Statements */
     AST_STMT_EXPR,
     AST_STMT_BLOCK,
+    AST_STMT_DECL_LIST,
     AST_STMT_VAR_DECL,
     AST_STMT_IF,
     AST_STMT_WHILE,
+    AST_STMT_DO_WHILE,
+    AST_STMT_SWITCH,
+    AST_STMT_CASE,
     AST_STMT_FOR,
     AST_STMT_RETURN,
     AST_STMT_BREAK,
     AST_STMT_CONTINUE,
+    AST_STMT_GOTO,
+    AST_STMT_LABEL,
 
     /* Declarations */
     AST_DECL_FUNC,
     AST_DECL_CLASS,
+    AST_DECL_ENUM,
     AST_DECL_NAMESPACE,
     AST_DECL_TYPEDEF,
     AST_DECL_TEMPLATE,
@@ -173,6 +183,17 @@ struct ASTNode {
             ASTNode *left;
             ASTNode *right;
         } binary;
+
+        struct {
+            ASTNode *cond;
+            ASTNode *then_expr;
+            ASTNode *else_expr;
+        } conditional;
+
+        struct {
+            ASTNode *left;
+            ASTNode *right;
+        } comma;
 
         /* AST_UNARY */
         struct {
@@ -267,12 +288,19 @@ struct ASTNode {
             ASTNode *init;
             Symbol *sym;
             bool is_pack;
+            bool is_extern;
+            bool is_static;
         } var_decl;
 
         /* AST_PACK_EXPANSION */
         struct {
             ASTNode *expr;
         } pack_expansion;
+
+        struct {
+            ASTNode **items;
+            int count;
+        } init_list;
 
         /* AST_STMT_IF */
         struct {
@@ -287,6 +315,18 @@ struct ASTNode {
             ASTNode *body;
         } while_stmt;
 
+        struct {
+            ASTNode *expr;
+            ASTNode **cases;
+            int case_count;
+        } switch_stmt;
+
+        struct {
+            ASTNode *value;
+            ASTNode **stmts;
+            int count;
+        } case_stmt;
+
         /* AST_STMT_FOR */
         struct {
             ASTNode *init;
@@ -299,6 +339,10 @@ struct ASTNode {
         struct {
             ASTNode *expr;
         } ret_stmt;
+
+        struct {
+            const char *name;
+        } named_stmt;
 
         /* AST_DECL_FUNC */
         struct {
@@ -314,6 +358,7 @@ struct ASTNode {
             bool is_dtor;
             bool is_varargs;
             bool is_extern;
+            bool is_static;
             bool is_operator;
             int stack_size;
         } func_decl;
@@ -326,6 +371,13 @@ struct ASTNode {
             ASTNode **methods;
             int method_count;
         } class_decl;
+
+        struct {
+            const char *name;
+            const char **item_names;
+            int64_t *item_values;
+            int count;
+        } enum_decl;
 
         /* AST_DECL_NAMESPACE */
         struct {

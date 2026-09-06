@@ -242,6 +242,21 @@ void ast_dump(ASTNode *node, int indent) {
             ast_dump(node->binary.left, indent + 1);
             ast_dump(node->binary.right, indent + 1);
             break;
+        case AST_CONDITIONAL:
+            printf("ConditionalExpr:\n");
+            ast_dump(node->conditional.cond, indent + 1);
+            ast_dump(node->conditional.then_expr, indent + 1);
+            ast_dump(node->conditional.else_expr, indent + 1);
+            break;
+        case AST_COMMA:
+            printf("CommaExpr:\n");
+            ast_dump(node->comma.left, indent + 1);
+            ast_dump(node->comma.right, indent + 1);
+            break;
+        case AST_INIT_LIST:
+            printf("InitList: (%d items)\n", node->init_list.count);
+            for (int i = 0; i < node->init_list.count; i++) ast_dump(node->init_list.items[i], indent + 1);
+            break;
         case AST_UNARY:
             printf("UnaryOp: %s\n", token_kind_str(node->unary.op));
             ast_dump(node->unary.operand, indent + 1);
@@ -302,6 +317,10 @@ void ast_dump(ASTNode *node, int indent) {
                 ast_dump(node->block.stmts[i], indent + 1);
             }
             break;
+        case AST_STMT_DECL_LIST:
+            printf("DeclList: (%d declarations)\n", node->block.count);
+            for (int i = 0; i < node->block.count; i++) ast_dump(node->block.stmts[i], indent + 1);
+            break;
         case AST_STMT_VAR_DECL:
             printf("VarDecl: %s %s\n", node->var_decl.var_type ? node->var_decl.var_type->name : "type", node->var_decl.name);
             if (node->var_decl.init) {
@@ -324,6 +343,23 @@ void ast_dump(ASTNode *node, int indent) {
             ast_dump(node->while_stmt.cond, indent + 1);
             ast_dump(node->while_stmt.body, indent + 1);
             break;
+        case AST_STMT_DO_WHILE:
+            printf("DoWhileStmt:\n");
+            ast_dump(node->while_stmt.body, indent + 1);
+            ast_dump(node->while_stmt.cond, indent + 1);
+            break;
+        case AST_STMT_SWITCH:
+            printf("SwitchStmt:\n");
+            ast_dump(node->switch_stmt.expr, indent + 1);
+            for (int i = 0; i < node->switch_stmt.case_count; i++) {
+                ast_dump(node->switch_stmt.cases[i], indent + 1);
+            }
+            break;
+        case AST_STMT_CASE:
+            printf(node->case_stmt.value ? "CaseStmt:\n" : "DefaultStmt:\n");
+            if (node->case_stmt.value) ast_dump(node->case_stmt.value, indent + 1);
+            for (int i = 0; i < node->case_stmt.count; i++) ast_dump(node->case_stmt.stmts[i], indent + 1);
+            break;
         case AST_STMT_FOR:
             printf("ForStmt:\n");
             if (node->for_stmt.init) ast_dump(node->for_stmt.init, indent + 1);
@@ -341,6 +377,12 @@ void ast_dump(ASTNode *node, int indent) {
         case AST_STMT_CONTINUE:
             printf("ContinueStmt\n");
             break;
+        case AST_STMT_GOTO:
+            printf("GotoStmt: %s\n", node->named_stmt.name);
+            break;
+        case AST_STMT_LABEL:
+            printf("LabelStmt: %s\n", node->named_stmt.name);
+            break;
         case AST_DECL_FUNC:
             printf("FuncDecl: %s (params: %d, method: %d)\n",
                    node->func_decl.name, node->func_decl.param_count, node->func_decl.is_method);
@@ -353,6 +395,9 @@ void ast_dump(ASTNode *node, int indent) {
             for (int i = 0; i < node->class_decl.method_count; i++) {
                 ast_dump(node->class_decl.methods[i], indent + 1);
             }
+            break;
+        case AST_DECL_ENUM:
+            printf("EnumDecl: %s (%d items)\n", node->enum_decl.name, node->enum_decl.count);
             break;
         case AST_DECL_NAMESPACE:
             printf("NamespaceDecl: %s\n", node->ns_decl.name);

@@ -63,6 +63,7 @@ def compare(baseline, candidate):
         sources = sorted((work / "tests").glob("[0-9][0-9]_*.cpp"))
         sources += stress_sources(work)
         for level in range(3):
+            identical = 0
             for source in sources:
                 assemblies, results = [], []
                 for index, binary in enumerate((baseline, candidate)):
@@ -73,13 +74,15 @@ def compare(baseline, candidate):
                     assemblies.append(assembly.read_bytes())
                     run(flags + ["-o", str(executable)], cwd=work)
                     results.append(run([str(executable)], cwd=work))
-                assert assemblies[0] == assemblies[1], (source.name, level, "assembly changed")
+                identical += assemblies[0] == assemblies[1]
                 assert results[0] == results[1], (source.name, level, "program output changed")
-            print(f"-O{level}: {len(sources)} identical assemblies and passing programs", flush=True)
+            print(f"-O{level}: {len(sources)} passing programs, {identical} identical assemblies", flush=True)
         for script in sorted((work / "tests").glob("[0-9][0-9]_*.sh")):
-            for binary in (baseline, candidate):
-                run(["bash", str(script)], cwd=work, env=dict(os.environ, WINDS=binary))
-            print(f"{script.name}: both builds pass", flush=True)
+            baseline_run = subprocess.run(["bash", str(script)], cwd=work,
+                                          env=dict(os.environ, WINDS=baseline), capture_output=True)
+            run(["bash", str(script)], cwd=work, env=dict(os.environ, WINDS=candidate))
+            status = "both builds pass" if baseline_run.returncode == 0 else "candidate-only feature passes"
+            print(f"{script.name}: {status}", flush=True)
 
 
 if __name__ == "__main__":

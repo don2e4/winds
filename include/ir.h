@@ -65,6 +65,7 @@ typedef struct IRFunction {
     const char *name;
     const char *mangled_name;
     int stack_size;
+    bool is_global;
     IRInst *first_inst;
     IRInst *last_inst;
     int vreg_count;
@@ -84,6 +85,10 @@ typedef struct IRGlobalVar {
     int64_t init_val;
     const char *init_label;
     bool is_init;
+    int64_t *init_values;
+    int init_count;
+    int elem_size;
+    bool is_internal;
     struct IRGlobalVar *next;
 } IRGlobalVar;
 
