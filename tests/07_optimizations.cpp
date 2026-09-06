@@ -69,6 +69,33 @@ int test_unreachable() {
     return res;
 }
 
+int test_strength_reduction(int x) {
+    int m1 = x * 2;
+    int m2 = 4 * x;
+    int m3 = x * 8;
+    int m4 = 16 * x;
+    int m5 = x * 64;
+    int m6 = x * 1024;
+    return (m1 == (x << 1)) && (m2 == (x << 2)) && (m3 == (x << 3)) &&
+           (m4 == (x << 4)) && (m5 == (x << 6)) && (m6 == (x << 10));
+}
+
+int test_store_load_forwarding(int a, int b) {
+    int x = a + b;
+    int y = x * 2;
+    int z = x + y;
+    x = z - b;
+    int w = x + y + z;
+    return w;
+}
+
+int test_dead_store_elimination(int v) {
+    int val = 10;
+    val = 20;
+    val = v + 5;
+    return val;
+}
+
 int main() {
     if (!test_algebraic(42)) {
         printf("FAIL: algebraic simplification\n");
@@ -93,6 +120,24 @@ int main() {
         return 4;
     }
 
+    if (!test_strength_reduction(7) || !test_strength_reduction(-13)) {
+        printf("FAIL: strength reduction\n");
+        return 5;
+    }
+
+    int slf = test_store_load_forwarding(3, 4);
+    if (slf != 52) {
+        printf("FAIL: store load forwarding expected 52, got %d\n", slf);
+        return 6;
+    }
+
+    int dse = test_dead_store_elimination(100);
+    if (dse != 105) {
+        printf("FAIL: dead store elimination expected 105, got %d\n", dse);
+        return 7;
+    }
+
     printf("PASS: 07_optimizations completed successfully\n");
     return 0;
 }
+

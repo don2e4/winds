@@ -376,6 +376,264 @@ bool opt_copy_propagation(IRFunction *fn, Arena *arena) {
 }
 
 /* =========================================================================
+ * 2b. Store-to-Load Forwarding (Local Value Forwarding)
+ * ========================================================================= */
+
+typedef struct {
+    int offset;
+    int vreg;
+    int64_t imm;
+    bool is_const;
+    bool valid;
+    bool addr_escaped;
+} StackFwdSlot;
+
+typedef struct {
+    StackFwdSlot *slots;
+    int count;
+    int capacity;
+} StackFwdTable;
+
+static StackFwdSlot *stack_fwd_get(StackFwdTable *table, int offset) {
+    for (int i = 0; i < table->count; i++) {
+        if (table->slots[i].offset == offset) {
+            return &table->slots[i];
+        }
+    }
+    return NULL;
+}
+
+static StackFwdSlot *stack_fwd_get_or_create(StackFwdTable *table, int offset) {
+    StackFwdSlot *slot = stack_fwd_get(table, offset);
+    if (slot) return slot;
+    if (table->count < table->capacity) {
+        slot = &table->slots[table->count++];
+        slot->offset = offset;
+        slot->vreg = 0;
+        slot->imm = 0;
+        slot->is_const = false;
+        slot->valid = false;
+        slot->addr_escaped = false;
+        return slot;
+    }
+    return NULL;
+}
+
+static void stack_fwd_invalidate_all(StackFwdTable *table) {
+    for (int i = 0; i < table->count; i++) {
+        table->slots[i].valid = false;
+    }
+}
+
+static void stack_fwd_invalidate_escaped(StackFwdTable *table) {
+    for (int i = 0; i < table->count; i++) {
+        if (table->slots[i].addr_escaped) {
+            table->slots[i].valid = false;
+        }
+    }
+}
+
+static void stack_fwd_invalidate_vreg(StackFwdTable *table, int vreg) {
+    if (vreg <= 0) return;
+    for (int i = 0; i < table->count; i++) {
+        if (table->slots[i].valid && !table->slots[i].is_const && table->slots[i].vreg == vreg) {
+            table->slots[i].valid = false;
+        }
+    }
+}
+
+bool opt_store_load_forwarding(IRFunction *fn, Arena *arena) {
+    if (!fn || !fn->first_inst) return false;
+
+    bool changed = false;
+    int cap = (fn->stack_size > 0 ? (fn->stack_size / 4) + 64 : 64);
+    StackFwdSlot *slots = arena_alloc_zero(arena, sizeof(StackFwdSlot) * cap);
+    StackFwdTable table = { .slots = slots, .count = 0, .capacity = cap };
+
+    /* Step 1: Record all stack offsets whose address is taken */
+    for (IRInst *inst = fn->first_inst; inst != NULL; inst = inst->next) {
+        if (inst->op == IR_ADDR_STACK) {
+            StackFwdSlot *slot = stack_fwd_get_or_create(&table, inst->src1.offset);
+            if (slot) slot->addr_escaped = true;
+        }
+    }
+
+    /* Step 2: Forward stores to loads within each basic block */
+    for (IRInst *inst = fn->first_inst; inst != NULL; inst = inst->next) {
+        if (inst->op == IR_LABEL) {
+            stack_fwd_invalidate_all(&table);
+            continue;
+        }
+
+        if (inst->op == IR_CALL) {
+            stack_fwd_invalidate_all(&table);
+            continue;
+        }
+
+        if (inst->op == IR_STORE) {
+            stack_fwd_invalidate_escaped(&table);
+            continue;
+        }
+
+        if (inst->op == IR_STORE_STACK) {
+            StackFwdSlot *slot = stack_fwd_get_or_create(&table, inst->dest.offset);
+            if (slot) {
+                if (inst->src1.vreg > 0) {
+                    slot->vreg = inst->src1.vreg;
+                    slot->imm = 0;
+                    slot->is_const = false;
+                    slot->valid = true;
+                } else if (inst->src1.vreg == 0) {
+                    slot->vreg = 0;
+                    slot->imm = inst->src1.imm;
+                    slot->is_const = true;
+                    slot->valid = true;
+                }
+            }
+            continue;
+        }
+
+        if (inst->op == IR_LOAD_STACK) {
+            StackFwdSlot *slot = stack_fwd_get(&table, inst->src1.offset);
+            if (slot && slot->valid) {
+                if (slot->is_const) {
+                    inst->op = IR_IMM;
+                    inst->src1.vreg = 0;
+                    inst->src1.imm = slot->imm;
+                    inst->src1.label = NULL;
+                    inst->src1.offset = 0;
+                    changed = true;
+                } else if (slot->vreg > 0) {
+                    inst->op = IR_MOV;
+                    inst->src1.vreg = slot->vreg;
+                    inst->src1.imm = 0;
+                    inst->src1.label = NULL;
+                    inst->src1.offset = 0;
+                    changed = true;
+                }
+            }
+            continue;
+        }
+
+        if (inst->dest.vreg > 0) {
+            stack_fwd_invalidate_vreg(&table, inst->dest.vreg);
+        }
+    }
+
+    return changed;
+}
+
+/* =========================================================================
+ * 2c. Dead Stack Store Elimination
+ * ========================================================================= */
+
+typedef struct {
+    int offset;
+    IRInst *last_store;
+    bool addr_escaped;
+} StackDSEEntry;
+
+typedef struct {
+    StackDSEEntry *entries;
+    int count;
+    int capacity;
+} StackDSETable;
+
+static StackDSEEntry *stack_dse_get(StackDSETable *table, int offset) {
+    for (int i = 0; i < table->count; i++) {
+        if (table->entries[i].offset == offset) {
+            return &table->entries[i];
+        }
+    }
+    return NULL;
+}
+
+static StackDSEEntry *stack_dse_get_or_create(StackDSETable *table, int offset) {
+    StackDSEEntry *entry = stack_dse_get(table, offset);
+    if (entry) return entry;
+    if (table->count < table->capacity) {
+        entry = &table->entries[table->count++];
+        entry->offset = offset;
+        entry->last_store = NULL;
+        entry->addr_escaped = false;
+        return entry;
+    }
+    return NULL;
+}
+
+static void stack_dse_clear_stores(StackDSETable *table) {
+    for (int i = 0; i < table->count; i++) {
+        table->entries[i].last_store = NULL;
+    }
+}
+
+bool opt_dead_store_elimination(IRFunction *fn, Arena *arena) {
+    if (!fn || !fn->first_inst) return false;
+
+    bool changed = false;
+    int cap = (fn->stack_size > 0 ? (fn->stack_size / 4) + 64 : 64);
+    StackDSEEntry *entries = arena_alloc_zero(arena, sizeof(StackDSEEntry) * cap);
+    StackDSETable table = { .entries = entries, .count = 0, .capacity = cap };
+
+    /* Step 1: Escape analysis */
+    for (IRInst *inst = fn->first_inst; inst != NULL; inst = inst->next) {
+        if (inst->op == IR_ADDR_STACK) {
+            StackDSEEntry *entry = stack_dse_get_or_create(&table, inst->src1.offset);
+            if (entry) entry->addr_escaped = true;
+        }
+    }
+
+    /* Step 2: Eliminate overwritten stack stores without intervening reads */
+    for (IRInst *inst = fn->first_inst; inst != NULL; ) {
+        if (inst->op == IR_LABEL || inst->op == IR_JMP ||
+            inst->op == IR_JMP_IF_ZERO || inst->op == IR_JMP_IF_NOT_ZERO ||
+            inst->op == IR_RET || inst->op == IR_CALL) {
+            stack_dse_clear_stores(&table);
+            inst = inst->next;
+            continue;
+        }
+
+        if (inst->op == IR_STORE) {
+            for (int i = 0; i < table.count; i++) {
+                if (table.entries[i].addr_escaped) {
+                    table.entries[i].last_store = NULL;
+                }
+            }
+            inst = inst->next;
+            continue;
+        }
+
+        if (inst->op == IR_LOAD_STACK) {
+            StackDSEEntry *entry = stack_dse_get(&table, inst->src1.offset);
+            if (entry) {
+                entry->last_store = NULL;
+            }
+            inst = inst->next;
+            continue;
+        }
+
+        if (inst->op == IR_STORE_STACK) {
+            int off = inst->dest.offset;
+            StackDSEEntry *entry = stack_dse_get_or_create(&table, off);
+            if (entry && entry->last_store != NULL && !entry->addr_escaped) {
+                IRInst *prev = entry->last_store;
+                remove_inst(fn, prev);
+                changed = true;
+            }
+            if (entry) {
+                entry->last_store = inst;
+            }
+            inst = inst->next;
+            continue;
+        }
+
+        inst = inst->next;
+    }
+
+    return changed;
+}
+
+/* =========================================================================
  * 3. Simple Algebraic Simplification
  * ========================================================================= */
 
@@ -448,6 +706,31 @@ bool opt_algebraic_simplification(IRFunction *fn) {
                     inst->src1 = inst->src2;
                     inst->src2 = (IROperand){0};
                     changed = true;
+                }
+                /* x * 2^k => x << k */
+                else if (is_imm2 && imm2 > 1 && (imm2 & (imm2 - 1)) == 0) {
+                    int k = 0;
+                    int64_t tmp = imm2;
+                    while ((tmp >>= 1) > 0) k++;
+                    if (k >= 1 && k <= 62) {
+                        inst->op = IR_SHL;
+                        inst->src2.vreg = 0;
+                        inst->src2.imm = k;
+                        changed = true;
+                    }
+                }
+                /* 2^k * x => x << k */
+                else if (is_imm1 && imm1 > 1 && (imm1 & (imm1 - 1)) == 0) {
+                    int k = 0;
+                    int64_t tmp = imm1;
+                    while ((tmp >>= 1) > 0) k++;
+                    if (k >= 1 && k <= 62) {
+                        inst->op = IR_SHL;
+                        inst->src1 = inst->src2;
+                        inst->src2.vreg = 0;
+                        inst->src2.imm = k;
+                        changed = true;
+                    }
                 }
                 break;
 
@@ -1039,6 +1322,7 @@ bool opt_dead_code_elimination(IRFunction *fn, Arena *arena) {
     for (IRInst *inst = fn->first_inst; inst != NULL; ) {
         bool is_pure = (inst->op == IR_IMM || inst->op == IR_STR || inst->op == IR_MOV ||
                         inst->op == IR_LOAD_STACK || inst->op == IR_ADDR_STACK ||
+                        inst->op == IR_ADDR_GLOBAL ||
                         (inst->op >= IR_ADD && inst->op <= IR_CMP_GE));
 
         if (is_pure && inst->dest.vreg > 0 && inst->dest.vreg < max_vreg) {
@@ -1068,6 +1352,12 @@ void opt_run_pipeline(IRModule *mod, OptOptions options) {
         for (int iter = 0; iter < max_iters; iter++) {
             bool changed = false;
 
+            if (options.enable_store_load_fwd || options.level >= 1) {
+                changed |= opt_store_load_forwarding(fn, mod->arena);
+            }
+            if (options.enable_dead_store_elim || options.level >= 1) {
+                changed |= opt_dead_store_elimination(fn, mod->arena);
+            }
             if (options.enable_const_prop || options.enable_const_fold || options.level >= 1) {
                 changed |= opt_constant_propagation(fn, mod->arena);
             }

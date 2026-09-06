@@ -30,7 +30,13 @@ static void emit_operand_to_reg(FILE *out, const char *target_reg, IROperand op,
             fprintf(out, "\tmovq\t%d(%%rbp), %s\n", off, target_reg);
         }
     } else {
-        fprintf(out, "\tmovq\t$%ld, %s\n", (long)op.imm, target_reg);
+        if (op.imm == 0 && strcmp(target_reg, "%rax") == 0) {
+            fprintf(out, "\txorl\t%%eax, %%eax\n");
+        } else if (op.imm == 0 && strcmp(target_reg, "%rcx") == 0) {
+            fprintf(out, "\txorl\t%%ecx, %%ecx\n");
+        } else {
+            fprintf(out, "\tmovq\t$%ld, %s\n", (long)op.imm, target_reg);
+        }
     }
 }
 
@@ -107,9 +113,18 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
             case IR_IMM: {
                 int pr = get_operand_reg(ra, inst->dest);
                 if (pr >= 0) {
-                    fprintf(out, "\tmovq\t$%ld, %s\n", (long)inst->src1.imm, regalloc_reg_name_64((PhysReg)pr));
+                    if (inst->src1.imm == 0) {
+                        const char *r32 = regalloc_reg_name_32((PhysReg)pr);
+                        fprintf(out, "\txorl\t%s, %s\n", r32, r32);
+                    } else {
+                        fprintf(out, "\tmovq\t$%ld, %s\n", (long)inst->src1.imm, regalloc_reg_name_64((PhysReg)pr));
+                    }
                 } else {
-                    fprintf(out, "\tmovq\t$%ld, %%rax\n", (long)inst->src1.imm);
+                    if (inst->src1.imm == 0) {
+                        fprintf(out, "\txorl\t%%eax, %%eax\n");
+                    } else {
+                        fprintf(out, "\tmovq\t$%ld, %%rax\n", (long)inst->src1.imm);
+                    }
                     emit_store_rax(out, inst->dest, ra, local_stack);
                 }
                 break;
@@ -272,15 +287,23 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
 
             case IR_SHL:
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
-                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
-                fprintf(out, "\tshlq\t%%cl, %%rax\n");
+                if (inst->src2.vreg == 0) {
+                    fprintf(out, "\tshlq\t$%ld, %%rax\n", (long)inst->src2.imm);
+                } else {
+                    emit_operand_to_rcx(out, inst->src2, ra, local_stack);
+                    fprintf(out, "\tshlq\t%%cl, %%rax\n");
+                }
                 emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_SHR:
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
-                emit_operand_to_rcx(out, inst->src2, ra, local_stack);
-                fprintf(out, "\tsarq\t%%cl, %%rax\n");
+                if (inst->src2.vreg == 0) {
+                    fprintf(out, "\tsarq\t$%ld, %%rax\n", (long)inst->src2.imm);
+                } else {
+                    emit_operand_to_rcx(out, inst->src2, ra, local_stack);
+                    fprintf(out, "\tsarq\t%%cl, %%rax\n");
+                }
                 emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 

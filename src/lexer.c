@@ -1617,8 +1617,7 @@ static void handle_preprocessor(Lexer *l) {
             } else {
                 char canonical[2048];
                 if (realpath(resolved_path, canonical) == NULL) {
-                    strncpy(canonical, resolved_path, sizeof(canonical) - 1);
-                    canonical[sizeof(canonical) - 1] = '\0';
+                    snprintf(canonical, sizeof(canonical), "%s", resolved_path);
                 }
 
                 /* Record included file for dependency tracking (-MMD) */

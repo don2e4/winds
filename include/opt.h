@@ -14,12 +14,16 @@ typedef struct {
     bool enable_cfg_opt;
     bool enable_cfg_simplify;
     bool enable_unreachable;
+    bool enable_store_load_fwd;
+    bool enable_dead_store_elim;
 } OptOptions;
 
 /* Individual optimization passes */
 bool opt_constant_propagation(IRFunction *fn, Arena *arena);
 bool opt_copy_propagation(IRFunction *fn, Arena *arena);
 bool opt_algebraic_simplification(IRFunction *fn);
+bool opt_store_load_forwarding(IRFunction *fn, Arena *arena);
+bool opt_dead_store_elimination(IRFunction *fn, Arena *arena);
 bool opt_cfg_optimization(IRFunction *fn);
 bool opt_cfg_simplify(IRFunction *fn);
 bool opt_unreachable_block_removal(IRFunction *fn, Arena *arena);

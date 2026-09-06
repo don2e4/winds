@@ -389,8 +389,7 @@ static Type *substitute_type(Arena *arena, Type *t, TemplateEnv *env) {
                         memcpy(base_arg, arg, arg_len - 3);
                         base_arg[arg_len - 3] = '\0';
                     } else {
-                        strncpy(base_arg, arg, sizeof(base_arg) - 1);
-                        base_arg[sizeof(base_arg) - 1] = '\0';
+                        snprintf(base_arg, sizeof(base_arg), "%s", arg);
                     }
 
                     if (is_arg_pack && env->pack_idx != -1 && strcmp(base_arg, env->param_names[env->pack_idx]) == 0) {
@@ -1290,7 +1289,7 @@ const char *mangle_function_name(Arena *arena, const char *class_owner, const ch
     int len = 0;
 
     const char *op_suffix = NULL;
-    if (strncmp(name, "operator", 8) == 0) {
+    if (name && strlen(name) >= 8 && strncmp(name, "operator", 8) == 0) {
         const char *op = name + 8;
         if (strcmp(op, "<<") == 0) op_suffix = "_ls";
         else if (strcmp(op, ">>") == 0) op_suffix = "_rs";

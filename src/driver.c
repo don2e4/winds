@@ -234,7 +234,9 @@ int driver_run(const DriverConfig *config) {
             .enable_cfg_opt = true,
             .enable_cfg_simplify = true,
             .enable_unreachable = true,
-            .enable_dce = true
+            .enable_dce = true,
+            .enable_store_load_fwd = true,
+            .enable_dead_store_elim = true
         };
         opt_run_pipeline(ir_mod, opt_opts);
     }

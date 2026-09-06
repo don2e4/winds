@@ -96,8 +96,10 @@ RegAlloc *regalloc_run(IRFunction *fn, Arena *arena, int local_stack_base) {
 
     /* Count instructions */
     int inst_count = 0;
+    bool has_calls = false;
     for (IRInst *i = fn->first_inst; i != NULL; i = i->next) {
         inst_count++;
+        if (i->op == IR_CALL) has_calls = true;
     }
 
     if (inst_count == 0 || fn->vreg_count == 0) {
@@ -187,14 +189,17 @@ RegAlloc *regalloc_run(IRFunction *fn, Arena *arena, int local_stack_base) {
     }
 
     /* Pass 3: Identify live intervals that cross function calls */
-    for (int i = 0; i < inst_count; i++) {
-        if (inst_array[i]->op == IR_CALL) {
-            for (int v = 1; v <= fn->vreg_count; v++) {
-                if (intervals[v].start_inst >= 0 &&
-                    intervals[v].start_inst <= i &&
-                    intervals[v].end_inst >= i) {
-                    intervals[v].crosses_call = true;
-                }
+    if (has_calls) {
+        int *call_prefix = arena_alloc(arena, sizeof(int) * ((size_t)inst_count + 1));
+        call_prefix[0] = 0;
+        for (int i = 0; i < inst_count; i++) {
+            call_prefix[i + 1] = call_prefix[i] + (inst_array[i]->op == IR_CALL);
+        }
+        for (int v = 1; v <= fn->vreg_count; v++) {
+            if (intervals[v].start_inst >= 0) {
+                /* Calls at either endpoint count, including a call's result. */
+                intervals[v].crosses_call =
+                    call_prefix[intervals[v].end_inst + 1] > call_prefix[intervals[v].start_inst];
             }
         }
     }
