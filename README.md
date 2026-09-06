@@ -12,8 +12,8 @@
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/license-mit-7aa2f7.svg" alt="license" /></a>
-  <a href="#benchmarks"><img src="https://img.shields.io/badge/compile_time-0.47_ms-9ece6a.svg" alt="speed" /></a>
-  <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-737_kb-e0af68.svg" alt="size" /></a>
+  <a href="#benchmarks"><img src="https://img.shields.io/badge/compile_time-0.53_ms-9ece6a.svg" alt="speed" /></a>
+  <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-801_kb-e0af68.svg" alt="size" /></a>
   <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-19_passing-9ece6a.svg" alt="tests" /></a>
 </p>
 
@@ -50,8 +50,8 @@ benchmarks measured on x86_64 linux across 20 iterations:
 
 | metric | clang++ (llvm 22.1) | winds | advantage |
 |---|:---|:---|:---|
-| **frontend + codegen (`-s`)** | `11.80 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `0.47 ms` &nbsp; ▰ | **~25x faster** |
-| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `737 kb` &nbsp; ▰ | **~272x lighter** |
+| **frontend + codegen (`-s`)** | `11.67 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `0.53 ms` &nbsp; ▰ | **~22x faster** |
+| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `801 kb` &nbsp; ▰ | **~251x lighter** |
 | **runtime dependencies** | libllvm, libclang-cpp, libc++ | glibc only | **100% self-contained** |
 | **memory teardown** | recursive reference counting | contiguous bump arena | **instant constant-time exit** |
 
@@ -61,8 +61,8 @@ compiling `<iostream>`, `<string>`, `<vector>`, `<utility>`, `<algorithm>`, `<cs
 
 | compiler | compile time (`-s`) | advantage |
 |:---|:---|:---|
-| **clang++ (system libc++)** | `157.42 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | baseline |
-| **winds (self-contained std)** | `1.17 ms` &nbsp; ▰ | **~134x faster** |
+| **clang++ (system libc++)** | `173.15 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | baseline |
+| **winds (self-contained std)** | `2.34 ms` &nbsp; ▰ | **~74x faster** |
 
 ## why winds is small and fast
 
@@ -70,7 +70,7 @@ modern compilers often feel sluggish because they carry decades of legacy interm
 
 - **bump arena allocation**: all abstract syntax tree nodes, symbol entries, and intermediate instructions live in contiguous 128 kb blocks. memory allocations take a single pointer bump with zero lock contention, and process cleanup takes one single free call.
 - **linear scan register allocator**: instead of costly graph coloring algorithms with complex spill-reloading passes, winds runs a fast linear scan over live intervals with loop extension and automatic callee-saved register tracking.
-- **zero llvm dependencies**: no massive shared libraries to load into memory on each invocation. the entire compiler binary is only 737 kb.
+- **zero llvm dependencies**: no massive shared libraries to load into memory on each invocation. the entire compiler binary is only 801 kb.
 - **direct native code emission**: the intermediate representation lowers straight to system v amd64 assembly without intermediate serialization steps.
 
 ## compilation pipeline
