@@ -281,6 +281,10 @@ void ast_dump(ASTNode *node, int indent) {
             ast_dump(node->index_expr.target, indent + 1);
             ast_dump(node->index_expr.index, indent + 1);
             break;
+        case AST_CAST:
+            printf("CastExpr:\n");
+            ast_dump(node->cast.expr, indent + 1);
+            break;
         case AST_SIZEOF:
             printf("SizeofExpr\n");
             break;

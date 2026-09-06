@@ -2142,6 +2142,15 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
             break;
         }
 
+        case AST_CAST: {
+            if (expr->cast.expr) {
+                analyze_expr(s, expr->cast.expr);
+            }
+            expr->cast.target_type = resolve_type(s, expr->cast.target_type);
+            expr->type = expr->cast.target_type;
+            break;
+        }
+
         default:
             break;
     }
@@ -2291,6 +2300,9 @@ static void analyze_function(Sema *s, ASTNode *fn) {
     }
 
     const char *mangled = mangle_function_name(s->arena, class_owner, name, tparams_head, is_ctor, is_dtor);
+    if (fn->func_decl.is_extern && !class_owner) {
+        mangled = str_intern(name);
+    }
     fn->func_decl.mangled_name = mangled;
 
     Type *ret_t = fn->func_decl.func_type ? resolve_type(s, fn->func_decl.func_type) : g_type_void;
@@ -2517,8 +2529,8 @@ static void sema_register_classes(Sema *s, ASTNode *decl, const char *ns_prefix)
             s_func_templates = ft;
         }
     } else if (decl->kind == AST_DECL_NAMESPACE) {
-        const char *new_prefix = decl->ns_decl.name;
-        if (ns_prefix) {
+        const char *new_prefix = decl->ns_decl.name ? decl->ns_decl.name : ns_prefix;
+        if (decl->ns_decl.name && ns_prefix) {
             char buf[256];
             snprintf(buf, sizeof(buf), "%s::%s", ns_prefix, decl->ns_decl.name);
             new_prefix = arena_strdup(s->arena, buf);
@@ -2548,17 +2560,23 @@ static void sema_analyze_decls(Sema *s, ASTNode *decl, const char *ns_prefix) {
             analyze_function(s, mdecl);
         }
     } else if (decl->kind == AST_DECL_NAMESPACE) {
-        const char *new_prefix = decl->ns_decl.name;
-        if (ns_prefix) {
-            char buf[256];
-            snprintf(buf, sizeof(buf), "%s::%s", ns_prefix, decl->ns_decl.name);
-            new_prefix = arena_strdup(s->arena, buf);
+        if (decl->ns_decl.name) {
+            const char *new_prefix = decl->ns_decl.name;
+            if (ns_prefix) {
+                char buf[256];
+                snprintf(buf, sizeof(buf), "%s::%s", ns_prefix, decl->ns_decl.name);
+                new_prefix = arena_strdup(s->arena, buf);
+            }
+            scope_push(s, SCOPE_NAMESPACE, decl->ns_decl.name);
+            for (int d = 0; d < decl->ns_decl.count; d++) {
+                sema_analyze_decls(s, decl->ns_decl.decls[d], new_prefix);
+            }
+            scope_pop(s);
+        } else {
+            for (int d = 0; d < decl->ns_decl.count; d++) {
+                sema_analyze_decls(s, decl->ns_decl.decls[d], ns_prefix);
+            }
         }
-        scope_push(s, SCOPE_NAMESPACE, decl->ns_decl.name);
-        for (int d = 0; d < decl->ns_decl.count; d++) {
-            sema_analyze_decls(s, decl->ns_decl.decls[d], new_prefix);
-        }
-        scope_pop(s);
     } else if (decl->kind == AST_STMT_EXPR) {
         analyze_stmt(s, decl);
     } else if (decl->kind == AST_STMT_VAR_DECL) {

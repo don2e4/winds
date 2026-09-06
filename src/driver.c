@@ -189,6 +189,7 @@ int driver_run(const DriverConfig *config) {
 
     if (diag_error_count() > 0) {
         fprintf(stderr, "winds: compilation stopped with %d errors during parsing\n", diag_error_count());
+        parser_destroy(&parser);
         free(source);
         arena_destroy(arena);
         str_intern_destroy();
@@ -198,6 +199,7 @@ int driver_run(const DriverConfig *config) {
     if (config->emit_ast) {
         printf("=== AST FOR %s ===\n", config->input_file);
         ast_dump(ast, 0);
+        parser_destroy(&parser);
         free(source);
         arena_destroy(arena);
         str_intern_destroy();
@@ -210,6 +212,7 @@ int driver_run(const DriverConfig *config) {
     sema.warn_unused = config->warn_all || config->warn_extra || config->warnings_as_errors;
     if (!sema_analyze(&sema, ast) || diag_error_count() > 0) {
         fprintf(stderr, "winds: compilation stopped with %d errors during semantic analysis\n", diag_error_count());
+        parser_destroy(&parser);
         free(source);
         arena_destroy(arena);
         str_intern_destroy();
@@ -238,6 +241,7 @@ int driver_run(const DriverConfig *config) {
 
     if (config->emit_ir) {
         ir_dump(ir_mod);
+        parser_destroy(&parser);
         free(source);
         arena_destroy(arena);
         str_intern_destroy();
@@ -260,6 +264,7 @@ int driver_run(const DriverConfig *config) {
     FILE *asm_out = fopen(asm_file, "w");
     if (!asm_out) {
         fprintf(stderr, "winds: error: failed to create assembly output file '%s'\n", asm_file);
+        parser_destroy(&parser);
         free(source);
         arena_destroy(arena);
         str_intern_destroy();
@@ -279,6 +284,7 @@ int driver_run(const DriverConfig *config) {
     if (config->emit_assembly) {
         emit_dependency_file(config, &parser.lexer);
         /* Done emitting assembly (-S) */
+        parser_destroy(&parser);
         free(source);
         arena_destroy(arena);
         str_intern_destroy();
@@ -312,7 +318,7 @@ int driver_run(const DriverConfig *config) {
     /* 6. Assemble or Link */
     if (config->compile_only) {
         const char *obj_file = config->output_file ? config->output_file : "a.o";
-        char cmd[512];
+        char cmd[1024];
         snprintf(cmd, sizeof(cmd), "%s %s -o %s", as_bin, asm_file, obj_file);
         if (config->verbose) {
             printf("winds: executing: %s\n", cmd);
@@ -324,6 +330,7 @@ int driver_run(const DriverConfig *config) {
             emit_dependency_file(config, &parser.lexer);
         }
         if (is_temp_asm) unlink(asm_file);
+        parser_destroy(&parser);
         free(source);
         arena_destroy(arena);
         str_intern_destroy();
@@ -359,6 +366,7 @@ int driver_run(const DriverConfig *config) {
         fprintf(stderr, "winds: error: linker failed with exit code %d\n", ret);
         if (is_temp_asm) unlink(asm_file);
         if (is_temp_run_bin) unlink(tmp_run_bin);
+        parser_destroy(&parser);
         free(source);
         arena_destroy(arena);
         str_intern_destroy();
@@ -393,6 +401,7 @@ int driver_run(const DriverConfig *config) {
         printf("winds: completed build to '%s' in %.2f ms\n", out_binary, t_total - t_start);
     }
 
+    parser_destroy(&parser);
     free(source);
     arena_destroy(arena);
     str_intern_destroy();

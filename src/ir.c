@@ -167,6 +167,9 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
         case AST_PACK_EXPANSION:
             return expr->pack_expansion.expr ? lower_expr(mod, fn, expr->pack_expansion.expr) : res;
 
+        case AST_CAST:
+            return expr->cast.expr ? lower_expr(mod, fn, expr->cast.expr) : res;
+
         case AST_LIT_INT: {
             res.vreg = alloc_vreg(fn);
             IRInst *inst = make_inst(arena, IR_IMM);

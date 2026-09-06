@@ -34,6 +34,12 @@ typedef enum {
     TOK_KW_TYPEDEF,
     TOK_KW_TEMPLATE,
     TOK_KW_TYPENAME,
+    TOK_KW_EXTENSION,
+    TOK_KW_ATTRIBUTE,
+    TOK_KW_ASM,
+    TOK_KW_RESTRICT,
+    TOK_KW_VOLATILE,
+    TOK_KW_TYPEOF,
 
     /* Types */
     TOK_KW_VOID,
@@ -124,6 +130,8 @@ struct Token {
 typedef struct {
     const char *name;
     bool is_function_like;
+    bool is_variadic;
+    const char *var_param_name; /* e.g. "__VA_ARGS__" or custom e.g. "args" */
     const char **params;
     int param_count;
     const char *body;
@@ -140,6 +148,14 @@ typedef struct {
     char *allocated_source; /* Dynamically allocated buffer if loaded via #include */
     const char *macro_name; /* Active macro name being expanded, or NULL */
 } LexerBuffer;
+
+#define MAX_COND_DEPTH 128
+
+typedef struct {
+    bool parent_active;
+    bool branch_taken;
+    bool branch_active;
+} CondState;
 
 typedef struct Lexer {
     LexerBuffer buffers[MAX_INCLUDE_DEPTH];
@@ -160,12 +176,18 @@ typedef struct Lexer {
 #define MAX_INCLUDED_FILES 256
 
     /* Conditional compilation */
+    CondState cond_stack[MAX_COND_DEPTH];
     int cond_depth;
-    int skip_depth;
 
     /* Included files tracking for -MMD dependency generation */
     const char *included_files[MAX_INCLUDED_FILES];
     int included_file_count;
+
+    /* Allocated header buffers to be freed upon cleanup */
+    struct LexerAllocatedBuffers {
+        char *buffers[MAX_INCLUDED_FILES];
+        int count;
+    } *allocated_headers;
 } Lexer;
 
 /* Lookup a macro definition by name */
@@ -173,6 +195,9 @@ MacroDef *find_macro(Lexer *l, const char *name);
 
 /* Initialize lexer with source string and filename */
 void lexer_init(Lexer *l, const char *source, const char *filename);
+
+/* Destroy lexer and free dynamically allocated header buffers */
+void lexer_destroy(Lexer *l);
 
 /* Add an include search path (-I) */
 void lexer_add_include_path(Lexer *l, const char *path);

@@ -29,22 +29,65 @@ void lexer_init(Lexer *l, const char *source, const char *filename) {
     l->buffers[0].macro_name = NULL;
 
     /* Predefine standard macros */
-    l->macro_defs[l->macro_def_count++] = (MacroDef){
-        .name = str_intern("__winds__"),
-        .is_function_like = false,
-        .params = NULL,
-        .param_count = 0,
-        .body = str_intern("1"),
-        .is_active = false
+    static const struct { const char *name; const char *body; } default_defs[] = {
+        { "__winds__", "1" },
+        { "__cplusplus", "201703L" },
+        { "__x86_64__", "1" },
+        { "__x86_64", "1" },
+        { "__linux__", "1" },
+        { "__linux", "1" },
+        { "__gnu_linux__", "1" },
+        { "__unix__", "1" },
+        { "__unix", "1" },
+        { "__LP64__", "1" },
+        { "_LP64", "1" },
+        { "__ELF__", "1" },
+        { "__GNUC__", "11" },
+        { "__GNUC_MINOR__", "4" },
+        { "__GNUC_PATCHLEVEL__", "0" },
+        { "__ORDER_LITTLE_ENDIAN__", "1234" },
+        { "__ORDER_BIG_ENDIAN__", "4321" },
+        { "__BYTE_ORDER__", "1234" },
+        { "__FLOAT_WORD_ORDER__", "1234" },
+        { "__SIZEOF_POINTER__", "8" },
+        { "__SIZEOF_LONG__", "8" },
+        { "__SIZEOF_INT__", "4" },
+        { "__SIZEOF_SHORT__", "2" },
+        { "__STDC__", "1" },
+        { "__STDC_HOSTED__", "1" }
     };
-    l->macro_defs[l->macro_def_count++] = (MacroDef){
-        .name = str_intern("__cplusplus"),
-        .is_function_like = false,
-        .params = NULL,
-        .param_count = 0,
-        .body = str_intern("201703L"),
-        .is_active = false
-    };
+    for (size_t di = 0; di < sizeof(default_defs) / sizeof(default_defs[0]); di++) {
+        if (l->macro_def_count < MAX_MACRO_DEFS) {
+            l->macro_defs[l->macro_def_count++] = (MacroDef){
+                .name = str_intern(default_defs[di].name),
+                .is_function_like = false,
+                .is_variadic = false,
+                .var_param_name = NULL,
+                .params = NULL,
+                .param_count = 0,
+                .body = str_intern(default_defs[di].body),
+                .is_active = false
+            };
+        }
+    }
+    l->allocated_headers = calloc(1, sizeof(*l->allocated_headers));
+}
+
+void lexer_destroy(Lexer *l) {
+    for (int i = 0; i < l->macro_def_count; i++) {
+        if (l->macro_defs[i].params) {
+            free((void*)l->macro_defs[i].params);
+            l->macro_defs[i].params = NULL;
+        }
+    }
+    if (l->allocated_headers) {
+        for (int i = 0; i < l->allocated_headers->count; i++) {
+            free(l->allocated_headers->buffers[i]);
+            l->allocated_headers->buffers[i] = NULL;
+        }
+        free(l->allocated_headers);
+        l->allocated_headers = NULL;
+    }
 }
 
 void lexer_add_include_path(Lexer *l, const char *path) {
@@ -174,9 +217,26 @@ static void push_macro_buffer(Lexer *l, const char *name, const char *text) {
     nb->macro_name = name;
 }
 
+static bool is_str_empty_or_whitespace(const char *s) {
+    if (!s) return true;
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+    return *s == '\0';
+}
+
 static char *expand_macro_body(MacroDef *m, char **args, int arg_count) {
     StrBuf sb;
     strbuf_init(&sb);
+
+    char *var_args = NULL;
+    if (m->is_variadic) {
+        StrBuf vab;
+        strbuf_init(&vab);
+        for (int i = m->param_count; i < arg_count; i++) {
+            if (i > m->param_count) strbuf_append_str(&vab, ", ");
+            strbuf_append_str(&vab, args[i]);
+        }
+        var_args = vab.data;
+    }
 
     const char *p = m->body ? m->body : "";
     while (*p != '\0') {
@@ -198,10 +258,22 @@ static char *expand_macro_body(MacroDef *m, char **args, int arg_count) {
                 }
                 id[idlen] = '\0';
                 int pidx = -1;
+                bool is_va = false;
                 for (int i = 0; i < m->param_count; i++) {
                     if (strcmp(m->params[i], id) == 0) { pidx = i; break; }
                 }
-                if (pidx >= 0 && pidx < arg_count) {
+                if (pidx == -1 && m->is_variadic && m->var_param_name && strcmp(m->var_param_name, id) == 0) {
+                    is_va = true;
+                }
+                if (is_va) {
+                    strbuf_append_char(&sb, '"');
+                    const char *s = var_args ? var_args : "";
+                    for (; *s != '\0'; s++) {
+                        if (*s == '"' || *s == '\\') strbuf_append_char(&sb, '\\');
+                        strbuf_append_char(&sb, *s);
+                    }
+                    strbuf_append_char(&sb, '"');
+                } else if (pidx >= 0 && pidx < arg_count) {
                     strbuf_append_char(&sb, '"');
                     for (const char *s = args[pidx]; *s != '\0'; s++) {
                         if (*s == '"' || *s == '\\') strbuf_append_char(&sb, '\\');
@@ -219,10 +291,28 @@ static char *expand_macro_body(MacroDef *m, char **args, int arg_count) {
                 }
                 id[idlen] = '\0';
                 int pidx = -1;
+                bool is_va = false;
                 for (int i = 0; i < m->param_count; i++) {
                     if (strcmp(m->params[i], id) == 0) { pidx = i; break; }
                 }
-                if (pidx >= 0 && pidx < arg_count) {
+                if (pidx == -1 && m->is_variadic && m->var_param_name && strcmp(m->var_param_name, id) == 0) {
+                    is_va = true;
+                }
+                if (is_va) {
+                    /* Check for GCC ', ##__VA_ARGS__' extension: delete comma if var_args is empty */
+                    strbuf_trim_trailing(&sb);
+                    if (sb.len > 0 && sb.data[sb.len - 1] == ',') {
+                        if (is_str_empty_or_whitespace(var_args)) {
+                            sb.len--;
+                            sb.data[sb.len] = '\0';
+                        } else {
+                            strbuf_append_char(&sb, ' ');
+                            strbuf_append_str(&sb, var_args);
+                        }
+                    } else {
+                        strbuf_append_str(&sb, var_args ? var_args : "");
+                    }
+                } else if (pidx >= 0 && pidx < arg_count) {
                     strbuf_append_str(&sb, args[pidx]);
                 } else {
                     strbuf_append_str(&sb, id);
@@ -245,10 +335,24 @@ static char *expand_macro_body(MacroDef *m, char **args, int arg_count) {
                 }
                 id[idlen] = '\0';
                 int pidx = -1;
+                bool is_va = false;
                 for (int i = 0; i < m->param_count; i++) {
                     if (strcmp(m->params[i], id) == 0) { pidx = i; break; }
                 }
-                if (pidx >= 0 && pidx < arg_count) {
+                if (pidx == -1 && m->is_variadic && m->var_param_name && strcmp(m->var_param_name, id) == 0) {
+                    is_va = true;
+                }
+                if (is_va) {
+                    p = q;
+                    strbuf_append_char(&sb, '"');
+                    const char *s = var_args ? var_args : "";
+                    for (; *s != '\0'; s++) {
+                        if (*s == '"' || *s == '\\') strbuf_append_char(&sb, '\\');
+                        strbuf_append_char(&sb, *s);
+                    }
+                    strbuf_append_char(&sb, '"');
+                    continue;
+                } else if (pidx >= 0 && pidx < arg_count) {
                     p = q;
                     strbuf_append_char(&sb, '"');
                     for (const char *s = args[pidx]; *s != '\0'; s++) {
@@ -299,10 +403,16 @@ static char *expand_macro_body(MacroDef *m, char **args, int arg_count) {
             }
             id[idlen] = '\0';
             int pidx = -1;
+            bool is_va = false;
             for (int i = 0; i < m->param_count; i++) {
                 if (strcmp(m->params[i], id) == 0) { pidx = i; break; }
             }
-            if (pidx >= 0 && pidx < arg_count) {
+            if (pidx == -1 && m->is_variadic && m->var_param_name && strcmp(m->var_param_name, id) == 0) {
+                is_va = true;
+            }
+            if (is_va) {
+                strbuf_append_str(&sb, var_args ? var_args : "");
+            } else if (pidx >= 0 && pidx < arg_count) {
                 strbuf_append_str(&sb, args[pidx]);
             } else {
                 strbuf_append_str(&sb, id);
@@ -314,6 +424,7 @@ static char *expand_macro_body(MacroDef *m, char **args, int arg_count) {
         strbuf_append_char(&sb, *p++);
     }
 
+    if (var_args) free(var_args);
     return sb.data;
 }
 
@@ -407,6 +518,10 @@ static char *expand_argument_tokens(Lexer *l, const char *arg_text) {
         } else {
             strbuf_append_str(&sb, token_kind_str(tok.kind));
         }
+    }
+
+    if (temp_l.allocated_headers) {
+        free(temp_l.allocated_headers);
     }
 
     return sb.data;
@@ -580,16 +695,26 @@ static bool try_expand_macro(Lexer *l, const char *name, SourceLoc loc) {
         }
     }
 
-    if (arg_count != m->param_count) {
-        diag_report(DIAG_ERROR, loc, "macro '%s' requires %d arguments, but %d were provided",
-                    m->name, m->param_count, arg_count);
-        for (int i = 0; i < arg_count; i++) free(args[i]);
-        return false;
+    if (m->is_variadic) {
+        if (arg_count < m->param_count) {
+            diag_report(DIAG_ERROR, loc, "macro '%s' requires at least %d arguments, but %d were provided",
+                        m->name, m->param_count, arg_count);
+            for (int i = 0; i < arg_count; i++) free(args[i]);
+            return false;
+        }
+    } else {
+        if (arg_count != m->param_count) {
+            diag_report(DIAG_ERROR, loc, "macro '%s' requires %d arguments, but %d were provided",
+                        m->name, m->param_count, arg_count);
+            for (int i = 0; i < arg_count; i++) free(args[i]);
+            return false;
+        }
     }
 
     char *subst_args[MAX_MACRO_PARAMS];
     for (int i = 0; i < arg_count; i++) {
-        if (param_is_stringified_or_pasted(m, m->params[i])) {
+        const char *pname = (i < m->param_count) ? m->params[i] : m->var_param_name;
+        if (param_is_stringified_or_pasted(m, pname)) {
             subst_args[i] = strdup(args[i]);
         } else {
             subst_args[i] = expand_argument_tokens(l, args[i]);
@@ -609,82 +734,436 @@ static bool try_expand_macro(Lexer *l, const char *name, SourceLoc loc) {
     return true;
 }
 
-static bool eval_preprocessor_condition(Lexer *l) {
-    while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
-
-    bool invert = false;
-    if (peek_char(l) == '!') {
-        advance_char(l);
-        while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
-        invert = true;
-    }
-
-    /* Check for 'defined' keyword */
-    char word[64];
-    int wlen = 0;
-    const char *p = l->buffers[l->depth].current;
-    while (isalpha((unsigned char)*p) || *p == '_') {
-        if (wlen < (int)sizeof(word) - 1) word[wlen++] = *p;
-        p++;
-    }
-    word[wlen] = '\0';
-
-    if (strcmp(word, "defined") == 0) {
-        while (wlen-- > 0) advance_char(l);
-        while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
-        bool has_paren = false;
-        if (peek_char(l) == '(') {
-            has_paren = true;
-            advance_char(l);
-            while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
-        }
-        char mname[128];
-        int mlen = 0;
-        while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && mlen < (int)sizeof(mname) - 1) {
-            mname[mlen++] = advance_char(l);
-        }
-        mname[mlen] = '\0';
-        if (has_paren) {
-            while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
-            if (peek_char(l) == ')') advance_char(l);
-        }
-        bool def = (find_macro(l, mname) != NULL);
-        return invert ? !def : def;
-    }
-
-    /* Check for integer literal */
-    if (isdigit((unsigned char)peek_char(l))) {
-        int64_t val = 0;
-        while (isdigit((unsigned char)peek_char(l))) {
-            val = val * 10 + (advance_char(l) - '0');
-        }
-        bool res = (val != 0);
-        return invert ? !res : res;
-    }
-
-    /* Check for macro name */
-    if (isalpha((unsigned char)peek_char(l)) || peek_char(l) == '_') {
-        char mname[128];
-        int mlen = 0;
-        while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && mlen < (int)sizeof(mname) - 1) {
-            mname[mlen++] = advance_char(l);
-        }
-        mname[mlen] = '\0';
-        MacroDef *m = find_macro(l, mname);
-        bool res = false;
-        if (m && m->body) {
-            const char *b = m->body;
-            while (*b == ' ' || *b == '\t') b++;
-            if (isdigit((unsigned char)*b)) {
-                res = (atoi(b) != 0);
-            } else {
-                res = true;
+static void skip_directive_line(Lexer *l) {
+    while (peek_char(l) != '\0') {
+        char c = peek_char(l);
+        if (c == '\\') {
+            const char *p = l->buffers[l->depth].current + 1;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == '\r' || *p == '\n') {
+                advance_char(l);
+                while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+                if (peek_char(l) == '\r') advance_char(l);
+                if (peek_char(l) == '\n') advance_char(l);
+                LexerBuffer *b = &l->buffers[l->depth];
+                b->line++;
+                b->col = 1;
+                b->line_start = b->current;
+                continue;
             }
         }
-        return invert ? !res : res;
+        if (c == '\n' || c == '\r') {
+            break;
+        }
+        advance_char(l);
+    }
+}
+
+static char *read_condition_text(Lexer *l) {
+    StrBuf sb;
+    strbuf_init(&sb);
+    while (peek_char(l) != '\0') {
+        char c = peek_char(l);
+        if (c == '\\') {
+            const char *p = l->buffers[l->depth].current + 1;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == '\r' || *p == '\n') {
+                advance_char(l);
+                while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+                if (peek_char(l) == '\r') advance_char(l);
+                if (peek_char(l) == '\n') advance_char(l);
+                LexerBuffer *b = &l->buffers[l->depth];
+                b->line++;
+                b->col = 1;
+                b->line_start = b->current;
+                strbuf_append_char(&sb, ' ');
+                continue;
+            }
+        }
+        if (c == '/' && peek_next_char(l) == '/') {
+            skip_directive_line(l);
+            break;
+        }
+        if (c == '/' && peek_next_char(l) == '*') {
+            advance_char(l);
+            advance_char(l);
+            while (peek_char(l) != '\0') {
+                if (peek_char(l) == '*' && peek_next_char(l) == '/') {
+                    advance_char(l);
+                    advance_char(l);
+                    break;
+                }
+                if (peek_char(l) == '\n') {
+                    l->buffers[l->depth].line++;
+                    l->buffers[l->depth].col = 1;
+                    advance_char(l);
+                    l->buffers[l->depth].line_start = l->buffers[l->depth].current;
+                } else {
+                    advance_char(l);
+                }
+            }
+            strbuf_append_char(&sb, ' ');
+            continue;
+        }
+        if (c == '\n' || c == '\r') {
+            break;
+        }
+        strbuf_append_char(&sb, advance_char(l));
+    }
+    return sb.data;
+}
+
+typedef struct {
+    const char *p;
+    Lexer *lexer;
+} PPEval;
+
+static void pp_skip_space(PPEval *pe) {
+    while (*pe->p == ' ' || *pe->p == '\t' || *pe->p == '\r' || *pe->p == '\n') pe->p++;
+}
+
+static int64_t pp_eval_expr(PPEval *pe);
+
+static int64_t pp_eval_primary(PPEval *pe) {
+    pp_skip_space(pe);
+    if (*pe->p == '(') {
+        pe->p++;
+        int64_t val = pp_eval_expr(pe);
+        pp_skip_space(pe);
+        if (*pe->p == ')') pe->p++;
+        return val;
     }
 
-    return false;
+    if (*pe->p == '\'') {
+        pe->p++;
+        int64_t val = 0;
+        if (*pe->p == '\\') {
+            pe->p++;
+            if (*pe->p == 'n') val = '\n';
+            else if (*pe->p == 't') val = '\t';
+            else if (*pe->p == '0') val = '\0';
+            else val = (unsigned char)*pe->p;
+            if (*pe->p) pe->p++;
+        } else {
+            val = (unsigned char)*pe->p++;
+        }
+        if (*pe->p == '\'') pe->p++;
+        return val;
+    }
+
+    if (isdigit((unsigned char)*pe->p)) {
+        int64_t val = 0;
+        if (*pe->p == '0' && (*(pe->p + 1) == 'x' || *(pe->p + 1) == 'X')) {
+            pe->p += 2;
+            while (isxdigit((unsigned char)*pe->p)) {
+                char c = *pe->p++;
+                val = val * 16 + (isdigit((unsigned char)c) ? c - '0' : tolower((unsigned char)c) - 'a' + 10);
+            }
+        } else if (*pe->p == '0') {
+            pe->p++;
+            while (*pe->p >= '0' && *pe->p <= '7') {
+                val = val * 8 + (*pe->p++ - '0');
+            }
+        } else {
+            while (isdigit((unsigned char)*pe->p)) {
+                val = val * 10 + (*pe->p++ - '0');
+            }
+        }
+        while (*pe->p == 'u' || *pe->p == 'U' || *pe->p == 'l' || *pe->p == 'L') pe->p++;
+        return val;
+    }
+
+    if (isalpha((unsigned char)*pe->p) || *pe->p == '_') {
+        const char *start = pe->p;
+        while (isalnum((unsigned char)*pe->p) || *pe->p == '_') pe->p++;
+        size_t len = pe->p - start;
+        char id[128];
+        if (len >= sizeof(id)) len = sizeof(id) - 1;
+        memcpy(id, start, len);
+        id[len] = '\0';
+
+        if (strcmp(id, "defined") == 0) {
+            pp_skip_space(pe);
+            bool has_paren = false;
+            if (*pe->p == '(') {
+                has_paren = true;
+                pe->p++;
+                pp_skip_space(pe);
+            }
+            const char *mstart = pe->p;
+            while (isalnum((unsigned char)*pe->p) || *pe->p == '_') pe->p++;
+            size_t mlen = pe->p - mstart;
+            char mid[128];
+            if (mlen >= sizeof(mid)) mlen = sizeof(mid) - 1;
+            memcpy(mid, mstart, mlen);
+            mid[mlen] = '\0';
+            if (has_paren) {
+                pp_skip_space(pe);
+                if (*pe->p == ')') pe->p++;
+            }
+            MacroDef *m = find_macro(pe->lexer, mid);
+            return (m != NULL && m->name != NULL) ? 1 : 0;
+        }
+
+        if (strcmp(id, "true") == 0) return 1;
+        if (strcmp(id, "false") == 0) return 0;
+
+        MacroDef *m = find_macro(pe->lexer, id);
+        if (m && m->name) {
+            if (!m->is_function_like && m->body) {
+                PPEval sub_pe = { .p = m->body, .lexer = pe->lexer };
+                return pp_eval_expr(&sub_pe);
+            }
+            pp_skip_space(pe);
+            if (m->is_function_like && *pe->p == '(') {
+                pe->p++;
+                char *args[MAX_MACRO_PARAMS];
+                int arg_count = 0;
+                char arg_buf[512];
+                int arg_len = 0;
+                int pdepth = 0;
+                while (*pe->p != '\0') {
+                    if (*pe->p == '(') { pdepth++; arg_buf[arg_len++] = *pe->p++; continue; }
+                    if (*pe->p == ')') {
+                        if (pdepth > 0) { pdepth--; arg_buf[arg_len++] = *pe->p++; continue; }
+                        pe->p++;
+                        arg_buf[arg_len] = '\0';
+                        if (arg_count < MAX_MACRO_PARAMS) args[arg_count++] = strdup(trim_str(arg_buf));
+                        break;
+                    }
+                    if (*pe->p == ',' && pdepth == 0) {
+                        pe->p++;
+                        arg_buf[arg_len] = '\0';
+                        if (arg_count < MAX_MACRO_PARAMS) args[arg_count++] = strdup(trim_str(arg_buf));
+                        arg_len = 0;
+                        continue;
+                    }
+                    if (arg_len < (int)sizeof(arg_buf) - 1) arg_buf[arg_len++] = *pe->p++;
+                    else pe->p++;
+                }
+                char *expanded = expand_macro_body(m, args, arg_count);
+                for (int i = 0; i < arg_count; i++) free(args[i]);
+                PPEval sub_pe = { .p = expanded, .lexer = pe->lexer };
+                int64_t val = pp_eval_expr(&sub_pe);
+                free(expanded);
+                return val;
+            }
+        }
+
+        /* Undefined identifiers evaluate to 0 in preprocessor expressions */
+        return 0;
+    }
+
+    if (*pe->p) pe->p++;
+    return 0;
+}
+
+static int64_t pp_eval_unary(PPEval *pe) {
+    pp_skip_space(pe);
+    if (*pe->p == '!') {
+        pe->p++;
+        return !pp_eval_unary(pe);
+    }
+    if (*pe->p == '~') {
+        pe->p++;
+        return ~pp_eval_unary(pe);
+    }
+    if (*pe->p == '+') {
+        pe->p++;
+        return pp_eval_unary(pe);
+    }
+    if (*pe->p == '-') {
+        pe->p++;
+        return -pp_eval_unary(pe);
+    }
+    return pp_eval_primary(pe);
+}
+
+static int64_t pp_eval_mul(PPEval *pe) {
+    int64_t left = pp_eval_unary(pe);
+    while (1) {
+        pp_skip_space(pe);
+        if (*pe->p == '*' && *(pe->p + 1) != '=') {
+            pe->p++;
+            left = left * pp_eval_unary(pe);
+        } else if (*pe->p == '/' && *(pe->p + 1) != '=') {
+            pe->p++;
+            int64_t right = pp_eval_unary(pe);
+            left = (right != 0) ? (left / right) : 0;
+        } else if (*pe->p == '%' && *(pe->p + 1) != '=') {
+            pe->p++;
+            int64_t right = pp_eval_unary(pe);
+            left = (right != 0) ? (left % right) : 0;
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+static int64_t pp_eval_add(PPEval *pe) {
+    int64_t left = pp_eval_mul(pe);
+    while (1) {
+        pp_skip_space(pe);
+        if (*pe->p == '+' && *(pe->p + 1) != '+' && *(pe->p + 1) != '=') {
+            pe->p++;
+            left = left + pp_eval_mul(pe);
+        } else if (*pe->p == '-' && *(pe->p + 1) != '-' && *(pe->p + 1) != '=' && *(pe->p + 1) != '>') {
+            pe->p++;
+            left = left - pp_eval_mul(pe);
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+static int64_t pp_eval_shift(PPEval *pe) {
+    int64_t left = pp_eval_add(pe);
+    while (1) {
+        pp_skip_space(pe);
+        if (*pe->p == '<' && *(pe->p + 1) == '<') {
+            pe->p += 2;
+            int64_t s = pp_eval_add(pe);
+            left = (s >= 0 && s < 64) ? (left << s) : 0;
+        } else if (*pe->p == '>' && *(pe->p + 1) == '>') {
+            pe->p += 2;
+            int64_t s = pp_eval_add(pe);
+            left = (s >= 0 && s < 64) ? (left >> s) : 0;
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+static int64_t pp_eval_relational(PPEval *pe) {
+    int64_t left = pp_eval_shift(pe);
+    while (1) {
+        pp_skip_space(pe);
+        if (*pe->p == '<' && *(pe->p + 1) == '=') {
+            pe->p += 2;
+            left = (left <= pp_eval_shift(pe));
+        } else if (*pe->p == '>' && *(pe->p + 1) == '=') {
+            pe->p += 2;
+            left = (left >= pp_eval_shift(pe));
+        } else if (*pe->p == '<' && *(pe->p + 1) != '<') {
+            pe->p++;
+            left = (left < pp_eval_shift(pe));
+        } else if (*pe->p == '>' && *(pe->p + 1) != '>') {
+            pe->p++;
+            left = (left > pp_eval_shift(pe));
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+static int64_t pp_eval_equality(PPEval *pe) {
+    int64_t left = pp_eval_relational(pe);
+    while (1) {
+        pp_skip_space(pe);
+        if (*pe->p == '=' && *(pe->p + 1) == '=') {
+            pe->p += 2;
+            left = (left == pp_eval_relational(pe));
+        } else if (*pe->p == '!' && *(pe->p + 1) == '=') {
+            pe->p += 2;
+            left = (left != pp_eval_relational(pe));
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+static int64_t pp_eval_band(PPEval *pe) {
+    int64_t left = pp_eval_equality(pe);
+    while (1) {
+        pp_skip_space(pe);
+        if (*pe->p == '&' && *(pe->p + 1) != '&' && *(pe->p + 1) != '=') {
+            pe->p++;
+            left = left & pp_eval_equality(pe);
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+static int64_t pp_eval_bxor(PPEval *pe) {
+    int64_t left = pp_eval_band(pe);
+    while (1) {
+        pp_skip_space(pe);
+        if (*pe->p == '^' && *(pe->p + 1) != '=') {
+            pe->p++;
+            left = left ^ pp_eval_band(pe);
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+static int64_t pp_eval_bor(PPEval *pe) {
+    int64_t left = pp_eval_bxor(pe);
+    while (1) {
+        pp_skip_space(pe);
+        if (*pe->p == '|' && *(pe->p + 1) != '|' && *(pe->p + 1) != '=') {
+            pe->p++;
+            left = left | pp_eval_bxor(pe);
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+static int64_t pp_eval_land(PPEval *pe) {
+    int64_t left = pp_eval_bor(pe);
+    while (1) {
+        pp_skip_space(pe);
+        if (*pe->p == '&' && *(pe->p + 1) == '&') {
+            pe->p += 2;
+            int64_t right = pp_eval_bor(pe);
+            left = (left && right);
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+static int64_t pp_eval_lor(PPEval *pe) {
+    int64_t left = pp_eval_land(pe);
+    while (1) {
+        pp_skip_space(pe);
+        if (*pe->p == '|' && *(pe->p + 1) == '|') {
+            pe->p += 2;
+            int64_t right = pp_eval_land(pe);
+            left = (left || right);
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+static int64_t pp_eval_expr(PPEval *pe) {
+    return pp_eval_lor(pe);
+}
+
+static bool eval_preprocessor_condition(Lexer *l) {
+    char *text = read_condition_text(l);
+    PPEval pe = { .p = text, .lexer = l };
+    int64_t res = pp_eval_expr(&pe);
+    free(text);
+    return (res != 0);
+}
+
+static bool is_lexer_skipping(Lexer *l) {
+    if (l->cond_depth <= 0) return false;
+    return !l->cond_stack[l->cond_depth - 1].branch_active;
 }
 
 static void handle_preprocessor(Lexer *l) {
@@ -706,81 +1185,150 @@ static void handle_preprocessor(Lexer *l) {
     }
 
     if (strcmp(dir, "ifndef") == 0) {
-        l->cond_depth++;
         char macro[128];
         int mlen = 0;
         while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && mlen < (int)sizeof(macro) - 1) {
             macro[mlen++] = advance_char(l);
         }
         macro[mlen] = '\0';
+        skip_directive_line(l);
 
-        if (l->skip_depth == 0) {
-            bool is_def = (find_macro(l, macro) != NULL);
-            if (is_def) {
-                l->skip_depth = l->cond_depth;
-            }
+        bool parent_active = (l->cond_depth == 0) ? true : l->cond_stack[l->cond_depth - 1].branch_active;
+        bool is_not_def = (find_macro(l, macro) == NULL);
+        if (l->cond_depth < MAX_COND_DEPTH) {
+            l->cond_stack[l->cond_depth++] = (CondState){
+                .parent_active = parent_active,
+                .branch_taken = parent_active && is_not_def,
+                .branch_active = parent_active && is_not_def
+            };
         }
-    } else if (strcmp(dir, "ifdef") == 0) {
-        l->cond_depth++;
+        return;
+    }
+
+    if (strcmp(dir, "ifdef") == 0) {
         char macro[128];
         int mlen = 0;
         while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && mlen < (int)sizeof(macro) - 1) {
             macro[mlen++] = advance_char(l);
         }
         macro[mlen] = '\0';
+        skip_directive_line(l);
 
-        if (l->skip_depth == 0) {
-            bool is_def = (find_macro(l, macro) != NULL);
-            if (!is_def) {
-                l->skip_depth = l->cond_depth;
+        bool parent_active = (l->cond_depth == 0) ? true : l->cond_stack[l->cond_depth - 1].branch_active;
+        bool is_def = (find_macro(l, macro) != NULL);
+        if (l->cond_depth < MAX_COND_DEPTH) {
+            l->cond_stack[l->cond_depth++] = (CondState){
+                .parent_active = parent_active,
+                .branch_taken = parent_active && is_def,
+                .branch_active = parent_active && is_def
+            };
+        }
+        return;
+    }
+
+    if (strcmp(dir, "if") == 0) {
+        bool parent_active = (l->cond_depth == 0) ? true : l->cond_stack[l->cond_depth - 1].branch_active;
+        bool cond_val = false;
+        if (parent_active) {
+            cond_val = eval_preprocessor_condition(l);
+        } else {
+            skip_directive_line(l);
+        }
+        if (l->cond_depth < MAX_COND_DEPTH) {
+            l->cond_stack[l->cond_depth++] = (CondState){
+                .parent_active = parent_active,
+                .branch_taken = parent_active && cond_val,
+                .branch_active = parent_active && cond_val
+            };
+        }
+        return;
+    }
+
+    if (strcmp(dir, "elif") == 0) {
+        if (l->cond_depth > 0) {
+            CondState *top = &l->cond_stack[l->cond_depth - 1];
+            if (top->parent_active && !top->branch_taken) {
+                bool cond_val = eval_preprocessor_condition(l);
+                if (cond_val) {
+                    top->branch_taken = true;
+                    top->branch_active = true;
+                } else {
+                    top->branch_active = false;
+                }
+            } else {
+                top->branch_active = false;
+                skip_directive_line(l);
+            }
+        } else {
+            skip_directive_line(l);
+        }
+        return;
+    }
+
+    if (strcmp(dir, "else") == 0) {
+        skip_directive_line(l);
+        if (l->cond_depth > 0) {
+            CondState *top = &l->cond_stack[l->cond_depth - 1];
+            if (top->parent_active && !top->branch_taken) {
+                top->branch_taken = true;
+                top->branch_active = true;
+            } else {
+                top->branch_active = false;
             }
         }
-    } else if (strcmp(dir, "if") == 0) {
-        l->cond_depth++;
-        if (l->skip_depth == 0) {
-            bool cond = eval_preprocessor_condition(l);
-            if (!cond) {
-                l->skip_depth = l->cond_depth;
-            }
-        }
-    } else if (strcmp(dir, "elif") == 0) {
-        if (l->skip_depth == l->cond_depth) {
-            bool cond = eval_preprocessor_condition(l);
-            if (cond) {
-                l->skip_depth = 0;
-            }
-        } else if (l->skip_depth == 0) {
-            l->skip_depth = l->cond_depth;
-        }
-    } else if (strcmp(dir, "else") == 0) {
-        if (l->skip_depth == l->cond_depth) {
-            l->skip_depth = 0;
-        } else if (l->skip_depth == 0) {
-            l->skip_depth = l->cond_depth;
-        }
-    } else if (strcmp(dir, "endif") == 0) {
-        if (l->skip_depth == l->cond_depth) {
-            l->skip_depth = 0;
-        }
+        return;
+    }
+
+    if (strcmp(dir, "endif") == 0) {
+        skip_directive_line(l);
         if (l->cond_depth > 0) {
             l->cond_depth--;
         }
-    } else if (l->skip_depth > 0) {
-        /* In skipping branch, ignore define / undef / pragma / include */
-    } else if (strcmp(dir, "undef") == 0) {
+        return;
+    }
+
+    /* For all other directives, if we are inside a skipping branch, ignore */
+    if (is_lexer_skipping(l)) {
+        skip_directive_line(l);
+        return;
+    }
+
+    if (strcmp(dir, "error") == 0) {
+        char *msg = read_condition_text(l);
+        diag_report(DIAG_ERROR, current_loc(l), "#error %s", trim_str(msg));
+        free(msg);
+        return;
+    }
+
+    if (strcmp(dir, "warning") == 0) {
+        char *msg = read_condition_text(l);
+        diag_report(DIAG_WARNING, current_loc(l), "#warning %s", trim_str(msg));
+        free(msg);
+        return;
+    }
+
+    if (strcmp(dir, "undef") == 0) {
         char macro[128];
         int mlen = 0;
         while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && mlen < (int)sizeof(macro) - 1) {
             macro[mlen++] = advance_char(l);
         }
         macro[mlen] = '\0';
+        skip_directive_line(l);
         for (int i = 0; i < l->macro_def_count; i++) {
             if (l->macro_defs[i].name && strcmp(l->macro_defs[i].name, macro) == 0) {
                 l->macro_defs[i].name = NULL;
+                if (l->macro_defs[i].params) {
+                    free((void*)l->macro_defs[i].params);
+                    l->macro_defs[i].params = NULL;
+                }
                 break;
             }
         }
-    } else if (strcmp(dir, "define") == 0) {
+        return;
+    }
+
+    if (strcmp(dir, "define") == 0) {
         char macro[128];
         int mlen = 0;
         while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && mlen < (int)sizeof(macro) - 1) {
@@ -789,6 +1337,8 @@ static void handle_preprocessor(Lexer *l) {
         macro[mlen] = '\0';
 
         bool is_function_like = false;
+        bool is_variadic = false;
+        const char *var_param_name = NULL;
         const char *params[MAX_MACRO_PARAMS];
         int param_count = 0;
 
@@ -802,18 +1352,39 @@ static void handle_preprocessor(Lexer *l) {
             } else {
                 while (peek_char(l) != '\0' && peek_char(l) != ')' && peek_char(l) != '\n') {
                     while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+                    if (peek_char(l) == '.' && peek_next_char(l) == '.') {
+                        advance_char(l); advance_char(l); advance_char(l); /* Consume '...' */
+                        is_variadic = true;
+                        var_param_name = str_intern("__VA_ARGS__");
+                        while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+                        if (peek_char(l) == ')') {
+                            advance_char(l);
+                            break;
+                        }
+                    }
                     char pname[128];
                     int plen = 0;
                     while ((isalnum((unsigned char)peek_char(l)) || peek_char(l) == '_') && plen < (int)sizeof(pname) - 1) {
                         pname[plen++] = advance_char(l);
                     }
                     pname[plen] = '\0';
-                    if (plen > 0 && param_count < MAX_MACRO_PARAMS) {
+                    /* Check for GNU named variadic args... */
+                    if (peek_char(l) == '.' && peek_next_char(l) == '.') {
+                        advance_char(l); advance_char(l); advance_char(l);
+                        is_variadic = true;
+                        var_param_name = str_intern(pname);
+                        while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
+                        if (peek_char(l) == ')') {
+                            advance_char(l);
+                            break;
+                        }
+                    } else if (plen > 0 && param_count < MAX_MACRO_PARAMS) {
                         params[param_count++] = str_intern(pname);
                     }
                     while (peek_char(l) == ' ' || peek_char(l) == '\t') advance_char(l);
                     if (peek_char(l) == ',') {
                         advance_char(l);
+                        continue;
                     } else if (peek_char(l) == ')') {
                         advance_char(l);
                         break;
@@ -912,8 +1483,14 @@ static void handle_preprocessor(Lexer *l) {
                 target = &l->macro_defs[l->macro_def_count++];
             }
             if (target) {
+                if (target->params) {
+                    free((void*)target->params);
+                    target->params = NULL;
+                }
                 target->name = str_intern(macro);
                 target->is_function_like = is_function_like;
+                target->is_variadic = is_variadic;
+                target->var_param_name = var_param_name;
                 target->param_count = param_count;
                 if (param_count > 0) {
                     const char **p_arr = malloc(sizeof(const char *) * param_count);
@@ -928,6 +1505,8 @@ static void handle_preprocessor(Lexer *l) {
                 target->is_active = false;
             }
         }
+        skip_directive_line(l);
+        return;
     } else if (strcmp(dir, "pragma") == 0) {
         char word[64];
         int wlen = 0;
@@ -941,7 +1520,9 @@ static void handle_preprocessor(Lexer *l) {
                 l->pragma_once_files[l->pragma_once_count++] = curr_file;
             }
         }
-    } else if (strcmp(dir, "include") == 0) {
+        skip_directive_line(l);
+        return;
+    } else if (strcmp(dir, "include") == 0 || strcmp(dir, "include_next") == 0) {
         SourceLoc loc = current_loc(l);
         char quote = peek_char(l);
         if (quote != '"' && quote != '<') {
@@ -1052,26 +1633,25 @@ static void handle_preprocessor(Lexer *l) {
 
                 if (!already_included) {
                     if (l->depth + 1 >= MAX_INCLUDE_DEPTH) {
-                        diag_report(DIAG_FATAL, loc, "maximum include depth exceeded (%d) while including '%s'", MAX_INCLUDE_DEPTH, header_name);
-                    }
+                        diag_report(DIAG_FATAL, loc, "maximum include depth exceeded (%d)", MAX_INCLUDE_DEPTH);
+                    } else {
+                        FILE *hf = fopen(canonical, "rb");
+                        if (hf) {
+                            fseek(hf, 0, SEEK_END);
+                            long fsize = ftell(hf);
+                            fseek(hf, 0, SEEK_SET);
 
-                    FILE *hf = fopen(canonical, "rb");
-                    if (hf) {
-                        fseek(hf, 0, SEEK_END);
-                        long size = ftell(hf);
-                        fseek(hf, 0, SEEK_SET);
-
-                        if (size >= 0) {
-                            char *hbuf = malloc(size + 1);
+                            char *hbuf = malloc(fsize + 1);
                             if (hbuf) {
-                                size_t r = fread(hbuf, 1, size, hf);
-                                hbuf[r] = '\0';
+                                if (l->allocated_headers && l->allocated_headers->count < MAX_INCLUDED_FILES) {
+                                    l->allocated_headers->buffers[l->allocated_headers->count++] = hbuf;
+                                }
+                                size_t read_bytes = fread(hbuf, 1, fsize, hf);
+                                hbuf[read_bytes] = '\0';
                                 fclose(hf);
 
-                                /* Advance past the rest of the #include line in current buffer */
-                                while (peek_char(l) != '\0' && peek_char(l) != '\n') {
-                                    advance_char(l);
-                                }
+                                /* Consume rest of current preprocessor line before pushing new buffer */
+                                skip_directive_line(l);
                                 if (peek_char(l) == '\n') {
                                     advance_char(l);
                                     l->buffers[l->depth].line++;
@@ -1101,9 +1681,7 @@ static void handle_preprocessor(Lexer *l) {
     }
 
     /* Skip rest of preprocessor line */
-    while (peek_char(l) != '\0' && peek_char(l) != '\n') {
-        advance_char(l);
-    }
+    skip_directive_line(l);
 }
 
 static void skip_whitespace_and_comments(Lexer *l) {
@@ -1159,10 +1737,12 @@ static void skip_whitespace_and_comments(Lexer *l) {
             }
             if (at_line_start) {
                 handle_preprocessor(l);
+            } else if (is_lexer_skipping(l)) {
+                advance_char(l);
             } else {
                 break;
             }
-        } else if (l->skip_depth > 0) {
+        } else if (is_lexer_skipping(l)) {
             /* If we are skipping conditional compilation block, consume characters until '#' or '\n' */
             advance_char(l);
         } else {
@@ -1219,20 +1799,26 @@ static Token scan_identifier_or_keyword(Lexer *l, SourceLoc loc) {
     else if (strcmp(name, "typedef") == 0) tok.kind = TOK_KW_TYPEDEF;
     else if (strcmp(name, "template") == 0) tok.kind = TOK_KW_TEMPLATE;
     else if (strcmp(name, "typename") == 0) tok.kind = TOK_KW_TYPENAME;
+    else if (strcmp(name, "__extension__") == 0) tok.kind = TOK_KW_EXTENSION;
+    else if (strcmp(name, "__attribute__") == 0 || strcmp(name, "__attribute") == 0) tok.kind = TOK_KW_ATTRIBUTE;
+    else if (strcmp(name, "__asm__") == 0 || strcmp(name, "__asm") == 0 || strcmp(name, "asm") == 0) tok.kind = TOK_KW_ASM;
+    else if (strcmp(name, "__restrict__") == 0 || strcmp(name, "__restrict") == 0 || strcmp(name, "restrict") == 0) tok.kind = TOK_KW_RESTRICT;
+    else if (strcmp(name, "__volatile__") == 0 || strcmp(name, "__volatile") == 0 || strcmp(name, "volatile") == 0) tok.kind = TOK_KW_VOLATILE;
+    else if (strcmp(name, "__typeof__") == 0 || strcmp(name, "__typeof") == 0 || strcmp(name, "typeof") == 0) tok.kind = TOK_KW_TYPEOF;
     else if (strcmp(name, "void") == 0) tok.kind = TOK_KW_VOID;
     else if (strcmp(name, "bool") == 0) tok.kind = TOK_KW_BOOL;
     else if (strcmp(name, "char") == 0) tok.kind = TOK_KW_CHAR;
     else if (strcmp(name, "short") == 0) tok.kind = TOK_KW_SHORT;
     else if (strcmp(name, "int") == 0) tok.kind = TOK_KW_INT;
     else if (strcmp(name, "long") == 0) tok.kind = TOK_KW_LONG;
-    else if (strcmp(name, "signed") == 0) tok.kind = TOK_KW_SIGNED;
+    else if (strcmp(name, "signed") == 0 || strcmp(name, "__signed__") == 0 || strcmp(name, "__signed") == 0) tok.kind = TOK_KW_SIGNED;
     else if (strcmp(name, "unsigned") == 0) tok.kind = TOK_KW_UNSIGNED;
     else if (strcmp(name, "float") == 0) tok.kind = TOK_KW_FLOAT;
     else if (strcmp(name, "double") == 0) tok.kind = TOK_KW_DOUBLE;
-    else if (strcmp(name, "const") == 0) tok.kind = TOK_KW_CONST;
+    else if (strcmp(name, "const") == 0 || strcmp(name, "__const__") == 0 || strcmp(name, "__const") == 0) tok.kind = TOK_KW_CONST;
     else if (strcmp(name, "static") == 0) tok.kind = TOK_KW_STATIC;
     else if (strcmp(name, "extern") == 0) tok.kind = TOK_KW_EXTERN;
-    else if (strcmp(name, "inline") == 0) tok.kind = TOK_KW_INLINE;
+    else if (strcmp(name, "inline") == 0 || strcmp(name, "__inline__") == 0 || strcmp(name, "__inline") == 0) tok.kind = TOK_KW_INLINE;
     else if (strcmp(name, "true") == 0) tok.kind = TOK_KW_TRUE;
     else if (strcmp(name, "false") == 0) tok.kind = TOK_KW_FALSE;
     else if (strcmp(name, "nullptr") == 0) tok.kind = TOK_KW_NULLPTR;
@@ -1487,12 +2073,24 @@ const char *token_kind_str(TokenKind kind) {
         case TOK_KW_BREAK: return "break";
         case TOK_KW_CONTINUE: return "continue";
         case TOK_KW_SIZEOF: return "sizeof";
+        case TOK_KW_OPERATOR: return "operator";
+        case TOK_KW_TYPEDEF: return "typedef";
+        case TOK_KW_TEMPLATE: return "template";
+        case TOK_KW_TYPENAME: return "typename";
+        case TOK_KW_EXTENSION: return "__extension__";
+        case TOK_KW_ATTRIBUTE: return "__attribute__";
+        case TOK_KW_ASM: return "asm";
+        case TOK_KW_RESTRICT: return "restrict";
+        case TOK_KW_VOLATILE: return "volatile";
+        case TOK_KW_TYPEOF: return "typeof";
         case TOK_KW_VOID: return "void";
         case TOK_KW_BOOL: return "bool";
         case TOK_KW_CHAR: return "char";
         case TOK_KW_SHORT: return "short";
         case TOK_KW_INT: return "int";
         case TOK_KW_LONG: return "long";
+        case TOK_KW_SIGNED: return "signed";
+        case TOK_KW_UNSIGNED: return "unsigned";
         case TOK_KW_FLOAT: return "float";
         case TOK_KW_DOUBLE: return "double";
         case TOK_KW_CONST: return "const";
