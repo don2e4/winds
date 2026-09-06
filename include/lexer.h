@@ -147,6 +147,7 @@ typedef struct {
     int col;
     char *allocated_source; /* Dynamically allocated buffer if loaded via #include */
     const char *macro_name; /* Active macro name being expanded, or NULL */
+    int cond_depth_at_entry;
 } LexerBuffer;
 
 #define MAX_COND_DEPTH 128

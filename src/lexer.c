@@ -27,6 +27,7 @@ void lexer_init(Lexer *l, const char *source, const char *filename) {
     l->buffers[0].col = 1;
     l->buffers[0].allocated_source = NULL;
     l->buffers[0].macro_name = NULL;
+    l->buffers[0].cond_depth_at_entry = 0;
 
     /* Predefine standard macros */
     static const struct { const char *name; const char *body; } default_defs[] = {
@@ -42,9 +43,6 @@ void lexer_init(Lexer *l, const char *source, const char *filename) {
         { "__LP64__", "1" },
         { "_LP64", "1" },
         { "__ELF__", "1" },
-        { "__GNUC__", "11" },
-        { "__GNUC_MINOR__", "4" },
-        { "__GNUC_PATCHLEVEL__", "0" },
         { "__ORDER_LITTLE_ENDIAN__", "1234" },
         { "__ORDER_BIG_ENDIAN__", "4321" },
         { "__BYTE_ORDER__", "1234" },
@@ -215,6 +213,7 @@ static void push_macro_buffer(Lexer *l, const char *name, const char *text) {
     nb->col = l->buffers[l->depth - 1].col;
     nb->allocated_source = NULL;
     nb->macro_name = name;
+    nb->cond_depth_at_entry = l->cond_depth;
 }
 
 static bool is_str_empty_or_whitespace(const char *s) {
@@ -1201,6 +1200,8 @@ static void handle_preprocessor(Lexer *l) {
                 .branch_taken = parent_active && is_not_def,
                 .branch_active = parent_active && is_not_def
             };
+        } else {
+            diag_report(DIAG_ERROR, current_loc(l), "conditional directive nesting exceeds %d levels", MAX_COND_DEPTH);
         }
         return;
     }
@@ -1222,6 +1223,8 @@ static void handle_preprocessor(Lexer *l) {
                 .branch_taken = parent_active && is_def,
                 .branch_active = parent_active && is_def
             };
+        } else {
+            diag_report(DIAG_ERROR, current_loc(l), "conditional directive nesting exceeds %d levels", MAX_COND_DEPTH);
         }
         return;
     }
@@ -1240,12 +1243,14 @@ static void handle_preprocessor(Lexer *l) {
                 .branch_taken = parent_active && cond_val,
                 .branch_active = parent_active && cond_val
             };
+        } else {
+            diag_report(DIAG_ERROR, current_loc(l), "conditional directive nesting exceeds %d levels", MAX_COND_DEPTH);
         }
         return;
     }
 
     if (strcmp(dir, "elif") == 0) {
-        if (l->cond_depth > 0) {
+        if (l->cond_depth > l->buffers[l->depth].cond_depth_at_entry) {
             CondState *top = &l->cond_stack[l->cond_depth - 1];
             if (top->parent_active && !top->branch_taken) {
                 bool cond_val = eval_preprocessor_condition(l);
@@ -1260,6 +1265,7 @@ static void handle_preprocessor(Lexer *l) {
                 skip_directive_line(l);
             }
         } else {
+            diag_report(DIAG_ERROR, current_loc(l), "#elif without a matching #if in this file");
             skip_directive_line(l);
         }
         return;
@@ -1267,7 +1273,7 @@ static void handle_preprocessor(Lexer *l) {
 
     if (strcmp(dir, "else") == 0) {
         skip_directive_line(l);
-        if (l->cond_depth > 0) {
+        if (l->cond_depth > l->buffers[l->depth].cond_depth_at_entry) {
             CondState *top = &l->cond_stack[l->cond_depth - 1];
             if (top->parent_active && !top->branch_taken) {
                 top->branch_taken = true;
@@ -1275,14 +1281,18 @@ static void handle_preprocessor(Lexer *l) {
             } else {
                 top->branch_active = false;
             }
+        } else {
+            diag_report(DIAG_ERROR, current_loc(l), "#else without a matching #if in this file");
         }
         return;
     }
 
     if (strcmp(dir, "endif") == 0) {
         skip_directive_line(l);
-        if (l->cond_depth > 0) {
+        if (l->cond_depth > l->buffers[l->depth].cond_depth_at_entry) {
             l->cond_depth--;
+        } else {
+            diag_report(DIAG_ERROR, current_loc(l), "#endif without a matching #if in this file");
         }
         return;
     }
@@ -1587,9 +1597,9 @@ static void handle_preprocessor(Lexer *l) {
                 }
             }
 
-            /* 3. Search default search paths */
+            /* 3. Search Winds' self-contained standard library. */
             if (!found) {
-                const char *defaults[] = { "include/winds/std", "./include/winds/std", "./include", "include", "/usr/include", "/usr/local/include" };
+                const char *defaults[] = { "include/winds/std", "./include/winds/std" };
                 for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
                     snprintf(resolved_path, sizeof(resolved_path), "%s/%s", defaults[i], header_name);
                     FILE *tf = fopen(resolved_path, "rb");
@@ -1637,16 +1647,39 @@ static void handle_preprocessor(Lexer *l) {
                     } else {
                         FILE *hf = fopen(canonical, "rb");
                         if (hf) {
-                            fseek(hf, 0, SEEK_END);
+                            if (fseek(hf, 0, SEEK_END) != 0) {
+                                diag_report(DIAG_ERROR, loc, "cannot seek header file '%s'", header_name);
+                                fclose(hf);
+                                skip_directive_line(l);
+                                return;
+                            }
                             long fsize = ftell(hf);
-                            fseek(hf, 0, SEEK_SET);
+                            if (fsize < 0 || fseek(hf, 0, SEEK_SET) != 0) {
+                                diag_report(DIAG_ERROR, loc, "cannot read header file '%s'", header_name);
+                                fclose(hf);
+                                skip_directive_line(l);
+                                return;
+                            }
 
-                            char *hbuf = malloc(fsize + 1);
+                            char *hbuf = malloc((size_t)fsize + 1);
                             if (hbuf) {
-                                if (l->allocated_headers && l->allocated_headers->count < MAX_INCLUDED_FILES) {
-                                    l->allocated_headers->buffers[l->allocated_headers->count++] = hbuf;
+                                if (!l->allocated_headers || l->allocated_headers->count >= MAX_INCLUDED_FILES) {
+                                    diag_report(DIAG_ERROR, loc, "too many included files (maximum %d)", MAX_INCLUDED_FILES);
+                                    free(hbuf);
+                                    fclose(hf);
+                                    skip_directive_line(l);
+                                    return;
                                 }
+                                l->allocated_headers->buffers[l->allocated_headers->count++] = hbuf;
                                 size_t read_bytes = fread(hbuf, 1, fsize, hf);
+                                if (read_bytes != (size_t)fsize && ferror(hf)) {
+                                    diag_report(DIAG_ERROR, loc, "failed while reading header file '%s'", header_name);
+                                    l->allocated_headers->count--;
+                                    free(hbuf);
+                                    fclose(hf);
+                                    skip_directive_line(l);
+                                    return;
+                                }
                                 hbuf[read_bytes] = '\0';
                                 fclose(hf);
 
@@ -1670,10 +1703,18 @@ static void handle_preprocessor(Lexer *l) {
                                 nb->col = 1;
                                 nb->allocated_source = hbuf;
                                 nb->macro_name = NULL;
+                                nb->cond_depth_at_entry = l->cond_depth;
                                 return;
                             }
+                            diag_report(DIAG_ERROR, loc, "out of memory reading header file '%s'", header_name);
+                            fclose(hf);
+                            skip_directive_line(l);
+                            return;
+                        } else {
+                            diag_report(DIAG_ERROR, loc, "cannot open header file '%s'", header_name);
+                            skip_directive_line(l);
+                            return;
                         }
-                        fclose(hf);
                     }
                 }
             }
@@ -1689,6 +1730,11 @@ static void skip_whitespace_and_comments(Lexer *l) {
         char c = peek_char(l);
 
         if (c == '\0') {
+            LexerBuffer *b = &l->buffers[l->depth];
+            if (l->cond_depth > b->cond_depth_at_entry) {
+                diag_report(DIAG_ERROR, current_loc(l), "unterminated conditional directive before end of file");
+                l->cond_depth = b->cond_depth_at_entry;
+            }
             if (l->depth > 0) {
                 l->depth--;
                 continue;

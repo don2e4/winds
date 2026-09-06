@@ -354,6 +354,7 @@ struct ASTNode {
         struct {
             ASTNode **decls;
             int count;
+            int capacity;
         } program;
     };
 };

@@ -71,5 +71,35 @@ else
     exit 1
 fi
 
-rm -f tests/test_err1.cpp tests/test_err2.cpp tests/test_err3.cpp tests/test_err4.cpp
+# Test 5: Invalid class operator must be diagnosed, not lowered as an integer shift
+cat << 'TC5' > tests/test_err5.cpp
+#include <iostream>
+int main() {
+    std::cout >> "wrong direction";
+}
+TC5
+OUTPUT=$($WINDS tests/test_err5.cpp 2>&1 || true)
+if echo "$OUTPUT" | grep -q "no matching 'operator>>' overload for class operand"; then
+    echo "  [PASS] Invalid stream operator rejected without crashing"
+else
+    echo "  [FAIL] Invalid stream operator diagnostic:"
+    echo "$OUTPUT"
+    exit 1
+fi
+
+# Test 6: Conditional directives cannot leak across file boundaries
+cat << 'TC6' > tests/test_err6.cpp
+#if 1
+int main() { return 0; }
+TC6
+OUTPUT=$($WINDS tests/test_err6.cpp 2>&1 || true)
+if echo "$OUTPUT" | grep -q "unterminated conditional directive"; then
+    echo "  [PASS] Unterminated conditional directive diagnosed"
+else
+    echo "  [FAIL] Unterminated conditional diagnostic:"
+    echo "$OUTPUT"
+    exit 1
+fi
+
+rm -f tests/test_err1.cpp tests/test_err2.cpp tests/test_err3.cpp tests/test_err4.cpp tests/test_err5.cpp tests/test_err6.cpp
 echo "All diagnostics tests passed successfully!"

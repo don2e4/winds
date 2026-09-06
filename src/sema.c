@@ -39,6 +39,23 @@ static ClassTemplate *s_templates = NULL;
 static FuncTemplate *s_func_templates = NULL;
 static ASTNode *s_current_program = NULL;
 
+static void append_program_decl(Sema *s, ASTNode *decl) {
+    if (!s_current_program) return;
+    if (s_current_program->program.count == s_current_program->program.capacity) {
+        int old_count = s_current_program->program.count;
+        int new_capacity = s_current_program->program.capacity > 0
+            ? s_current_program->program.capacity * 2 : 8;
+        ASTNode **grown = arena_alloc(s->arena, sizeof(ASTNode *) * (size_t)new_capacity);
+        if (old_count > 0) {
+            memcpy(grown, s_current_program->program.decls,
+                   sizeof(ASTNode *) * (size_t)old_count);
+        }
+        s_current_program->program.decls = grown;
+        s_current_program->program.capacity = new_capacity;
+    }
+    s_current_program->program.decls[s_current_program->program.count++] = decl;
+}
+
 static void sema_register_classes(Sema *s, ASTNode *decl, const char *ns_prefix);
 static void sema_analyze_decls(Sema *s, ASTNode *decl, const char *ns_prefix);
 static Symbol *find_class_symbol(Sema *s, const char *name);
@@ -802,9 +819,7 @@ static Symbol *try_instantiate_class_template(Sema *s, const char *name) {
         new_cls->class_decl.methods = NULL;
         new_cls->class_decl.method_count = 0;
         sema_register_classes(s, new_cls, NULL);
-        if (s_current_program) {
-            s_current_program->program.decls[s_current_program->program.count++] = new_cls;
-        }
+        append_program_decl(s, new_cls);
         return find_class_symbol(s, canon_name);
     }
 
@@ -888,9 +903,7 @@ static Symbol *try_instantiate_class_template(Sema *s, const char *name) {
         add_symbol(s->global_scope, short_sym);
     }
 
-    if (s_current_program) {
-        s_current_program->program.decls[s_current_program->program.count++] = new_cls;
-    }
+    append_program_decl(s, new_cls);
 
     return find_class_symbol(s, canon_name);
 }
@@ -1145,9 +1158,7 @@ static Symbol *try_instantiate_func_template(Sema *s, ASTNode *call_expr) {
 
     sema_analyze_decls(s, new_fn, NULL);
 
-    if (s_current_program) {
-        s_current_program->program.decls[s_current_program->program.count++] = new_fn;
-    }
+    append_program_decl(s, new_fn);
 
     Symbol *main_sym = NULL;
     for (Scope *sc = s->global_scope; sc != NULL; sc = sc->parent) {
@@ -1581,6 +1592,11 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
                         }
                         break;
                     }
+
+                    diag_report(DIAG_ERROR, expr->loc,
+                                "no matching '%s' overload for class operand", op_name);
+                    expr->type = g_type_int;
+                    break;
                 }
             }
 

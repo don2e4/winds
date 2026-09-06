@@ -93,6 +93,19 @@ static bool parser_is_known_type(Parser *p, const char *name) {
     return false;
 }
 
+static void append_node(Parser *p, ASTNode ***nodes, int *count, int *capacity, ASTNode *node) {
+    if (*count == *capacity) {
+        int new_capacity = *capacity > 0 ? *capacity * 2 : 8;
+        ASTNode **grown = arena_alloc(p->arena, sizeof(ASTNode *) * (size_t)new_capacity);
+        if (*count > 0) {
+            memcpy(grown, *nodes, sizeof(ASTNode *) * (size_t)*count);
+        }
+        *nodes = grown;
+        *capacity = new_capacity;
+    }
+    (*nodes)[(*count)++] = node;
+}
+
 void parser_init(Parser *p, Arena *arena, const char *source, const char *filename) {
     lexer_init(&p->lexer, source, filename);
     p->arena = arena;
@@ -935,12 +948,13 @@ static ASTNode *parse_postfix(Parser *p) {
 
         /* Function call: expr(args) */
         if (match(p, TOK_LPAREN)) {
-            ASTNode **args = arena_alloc(p->arena, sizeof(ASTNode*) * 32);
+            ASTNode **args = NULL;
             int arg_count = 0;
+            int arg_capacity = 0;
 
             if (!check(p, TOK_RPAREN)) {
                 do {
-                    args[arg_count++] = parse_assignment(p);
+                    append_node(p, &args, &arg_count, &arg_capacity, parse_assignment(p));
                 } while (match(p, TOK_COMMA));
             }
             expect(p, TOK_RPAREN, "')' in function call");
@@ -969,11 +983,12 @@ static ASTNode *parse_postfix(Parser *p) {
             /* Check if this member access is followed by a call: obj.method(args) */
             if (check(p, TOK_LPAREN)) {
                 advance(p); /* Skip '(' */
-                ASTNode **args = arena_alloc(p->arena, sizeof(ASTNode*) * 32);
+                ASTNode **args = NULL;
                 int arg_count = 0;
+                int arg_capacity = 0;
                 if (!check(p, TOK_RPAREN)) {
                     do {
-                        args[arg_count++] = parse_assignment(p);
+                        append_node(p, &args, &arg_count, &arg_capacity, parse_assignment(p));
                     } while (match(p, TOK_COMMA));
                 }
                 expect(p, TOK_RPAREN, "')' in method call");
@@ -1059,12 +1074,13 @@ static ASTNode *parse_unary(Parser *p) {
     /* new expr: new Type or new Type(args) */
     if (match(p, TOK_KW_NEW)) {
         Type *t = parse_type(p);
-        ASTNode **args = arena_alloc(p->arena, sizeof(ASTNode*) * 16);
+        ASTNode **args = NULL;
         int arg_count = 0;
+        int arg_capacity = 0;
         if (match(p, TOK_LPAREN)) {
             if (!check(p, TOK_RPAREN)) {
                 do {
-                    args[arg_count++] = parse_assignment(p);
+                    append_node(p, &args, &arg_count, &arg_capacity, parse_assignment(p));
                 } while (match(p, TOK_COMMA));
             }
             expect(p, TOK_RPAREN, "')' in new expression");
@@ -1232,11 +1248,12 @@ static ASTNode *parse_block(Parser *p) {
     SourceLoc loc = p->current.loc;
     expect(p, TOK_LBRACE, "'{' to begin block");
 
-    ASTNode **stmts = arena_alloc(p->arena, sizeof(ASTNode*) * 128);
+    ASTNode **stmts = NULL;
     int count = 0;
+    int capacity = 0;
 
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
-        stmts[count++] = parse_statement(p);
+        append_node(p, &stmts, &count, &capacity, parse_statement(p));
     }
     expect(p, TOK_RBRACE, "'}' to end block");
 
@@ -1415,11 +1432,12 @@ static ASTNode *parse_statement(Parser *p) {
 
         /* Check for constructor call: Point p(1, 2); */
         if (!is_fn_ptr && match(p, TOK_LPAREN)) {
-            ASTNode **args = arena_alloc(p->arena, sizeof(ASTNode*) * 16);
+            ASTNode **args = NULL;
             int arg_count = 0;
+            int arg_capacity = 0;
             if (!check(p, TOK_RPAREN)) {
                 do {
-                    args[arg_count++] = parse_assignment(p);
+                    append_node(p, &args, &arg_count, &arg_capacity, parse_assignment(p));
                 } while (match(p, TOK_COMMA));
             }
             expect(p, TOK_RPAREN, "')' in object constructor call");
@@ -1447,8 +1465,9 @@ static ASTNode *parse_statement(Parser *p) {
 }
 
 static int parse_param_list(Parser *p, ASTNode ***out_params, bool *out_varargs) {
-    ASTNode **params = arena_alloc(p->arena, sizeof(ASTNode*) * 16);
+    ASTNode **params = NULL;
     int param_count = 0;
+    int param_capacity = 0;
     bool is_varargs = false;
 
     if (!check(p, TOK_RPAREN)) {
@@ -1493,7 +1512,7 @@ static int parse_param_list(Parser *p, ASTNode ***out_params, bool *out_varargs)
             param->var_decl.var_type = pt;
             param->var_decl.name = pname;
             param->var_decl.is_pack = is_pack;
-            params[param_count++] = param;
+            append_node(p, &params, &param_count, &param_capacity, param);
         } while (match(p, TOK_COMMA));
     }
     expect(p, TOK_RPAREN, "')' in parameter list");
@@ -1599,8 +1618,9 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
     Field *fields_head = NULL;
     Field **fields_tail = &fields_head;
 
-    ASTNode **methods = arena_alloc(p->arena, sizeof(ASTNode*) * 64);
+    ASTNode **methods = NULL;
     int method_count = 0;
+    int method_capacity = 0;
 
     const char *prev_class = p->current_class;
     p->current_class = class_name;
@@ -1633,7 +1653,7 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
             td->typedef_decl.name = alias_tok.str_val;
             td->typedef_decl.aliased_type = aliased_type;
             parser_add_type(p, td->typedef_decl.name);
-            methods[method_count++] = td;
+            append_node(p, &methods, &method_count, &method_capacity, td);
             continue;
         }
 
@@ -1655,7 +1675,7 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
             td->typedef_decl.name = name;
             td->typedef_decl.aliased_type = aliased_type;
             parser_add_type(p, td->typedef_decl.name);
-            methods[method_count++] = td;
+            append_node(p, &methods, &method_count, &method_capacity, td);
             continue;
         }
 
@@ -1676,17 +1696,19 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
             int param_count = parse_param_list(p, &params, &is_va);
 
             /* Constructor initializer list: : head(h), tail(t...) */
-            ASTNode **init_stmts = arena_alloc(p->arena, sizeof(ASTNode*) * 16);
+            ASTNode **init_stmts = NULL;
             int init_count = 0;
+            int init_capacity = 0;
             if (match(p, TOK_COLON)) {
                 do {
                     Token mem_tok = expect(p, TOK_IDENT, "member name in constructor initializer");
                     expect(p, TOK_LPAREN, "'(' in member initializer");
-                    ASTNode **m_args = arena_alloc(p->arena, sizeof(ASTNode*) * 16);
+                    ASTNode **m_args = NULL;
                     int m_arg_count = 0;
+                    int m_arg_capacity = 0;
                     if (!check(p, TOK_RPAREN)) {
                         do {
-                            m_args[m_arg_count++] = parse_assignment(p);
+                            append_node(p, &m_args, &m_arg_count, &m_arg_capacity, parse_assignment(p));
                         } while (match(p, TOK_COMMA));
                     }
                     expect(p, TOK_RPAREN, "')' in member initializer");
@@ -1705,7 +1727,7 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
 
                         ASTNode *stmt = ast_new(p->arena, AST_STMT_EXPR, mem_tok.loc);
                         stmt->stmt_expr.expr = assign;
-                        init_stmts[init_count++] = stmt;
+                        append_node(p, &init_stmts, &init_count, &init_capacity, stmt);
                     } else {
                         ASTNode *mcall = ast_new(p->arena, AST_CALL, mem_tok.loc);
                         mcall->call.is_method = true;
@@ -1716,7 +1738,7 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
 
                         ASTNode *stmt = ast_new(p->arena, AST_STMT_EXPR, mem_tok.loc);
                         stmt->stmt_expr.expr = mcall;
-                        init_stmts[init_count++] = stmt;
+                        append_node(p, &init_stmts, &init_count, &init_capacity, stmt);
                     }
                 } while (match(p, TOK_COMMA));
             }
@@ -1751,7 +1773,7 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
             fn->func_decl.body = body;
             fn->func_decl.is_method = true;
             fn->func_decl.is_ctor = true;
-            methods[method_count++] = fn;
+            append_node(p, &methods, &method_count, &method_capacity, fn);
             continue;
         }
 
@@ -1777,7 +1799,7 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
             fn->func_decl.body = body;
             fn->func_decl.is_method = true;
             fn->func_decl.is_dtor = true;
-            methods[method_count++] = fn;
+            append_node(p, &methods, &method_count, &method_capacity, fn);
             continue;
         }
 
@@ -1822,7 +1844,7 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
             fn->func_decl.body = body;
             fn->func_decl.is_method = true;
             fn->func_decl.is_operator = is_op;
-            methods[method_count++] = fn;
+            append_node(p, &methods, &method_count, &method_capacity, fn);
         } else {
             /* Array field: int data[4]; */
             if (match(p, TOK_LBRACKET)) {
@@ -1875,11 +1897,12 @@ static ASTNode *parse_namespace(Parser *p) {
         p->current_namespace = ns_name;
     }
 
-    ASTNode **decls = arena_alloc(p->arena, sizeof(ASTNode*) * 128);
+    ASTNode **decls = NULL;
     int count = 0;
+    int capacity = 0;
 
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
-        decls[count++] = parse_declaration(p);
+        append_node(p, &decls, &count, &capacity, parse_declaration(p));
     }
     expect(p, TOK_RBRACE, "'}' to close namespace body");
 
@@ -1910,12 +1933,13 @@ static ASTNode *parse_declaration(Parser *p) {
         Token str_tok = p->current;
         advance(p); /* Consume string literal "C" */
         if (match(p, TOK_LBRACE)) {
-            ASTNode **decls = arena_alloc(p->arena, sizeof(ASTNode*) * 1024);
+            ASTNode **decls = NULL;
             int count = 0;
+            int capacity = 0;
             while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
                 ASTNode *d = parse_declaration(p);
                 if (d) {
-                    decls[count++] = d;
+                    append_node(p, &decls, &count, &capacity, d);
                 }
             }
             expect(p, TOK_RBRACE, "'}' to close extern block");
@@ -2223,18 +2247,20 @@ ASTNode *parser_parse(Parser *p) {
         p->primed = true;
     }
     SourceLoc loc = p->current.loc;
-    ASTNode **decls = arena_alloc(p->arena, sizeof(ASTNode*) * 1024);
+    ASTNode **decls = NULL;
     int count = 0;
+    int capacity = 0;
 
     while (!check(p, TOK_EOF)) {
         ASTNode *decl = parse_declaration(p);
         if (decl) {
-            decls[count++] = decl;
+            append_node(p, &decls, &count, &capacity, decl);
         }
     }
 
     ASTNode *prog = ast_new(p->arena, AST_PROGRAM, loc);
     prog->program.decls = decls;
     prog->program.count = count;
+    prog->program.capacity = capacity;
     return prog;
 }
