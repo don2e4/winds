@@ -81,6 +81,7 @@ test: $(TARGET)
 	@WINDS=$(TARGET) bash tests/20_multifile.sh && echo "  [PASS] 20_multifile"
 	@$(TARGET) tests/21_c_compat.c -o tests/21_c_compat.out
 	@tests/21_c_compat.out && echo "  [PASS] 21_c_compat"
+	@WINDS=$(TARGET) bash tests/updates.sh
 	@echo "All tests passed successfully!"
 
 corpus-test: $(TARGET)

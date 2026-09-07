@@ -686,6 +686,14 @@ bool opt_algebraic_simplification(IRFunction *fn) {
                 break;
 
             case IR_MUL:
+                if ((is_imm2 && imm2 == -1) || (is_imm1 && imm1 == -1)) {
+                    IROperand value = is_imm2 && imm2 == -1 ? inst->src1 : inst->src2;
+                    inst->op = IR_SUB;
+                    inst->src1 = (IROperand){0};
+                    inst->src2 = value;
+                    changed = true;
+                    break;
+                }
                 /* x * 0 or 0 * x => 0 */
                 if ((is_imm2 && imm2 == 0) || (is_imm1 && imm1 == 0)) {
                     inst->op = IR_IMM;
@@ -735,6 +743,13 @@ bool opt_algebraic_simplification(IRFunction *fn) {
                 break;
 
             case IR_DIV:
+                if (is_imm2 && imm2 == -1) {
+                    inst->op = IR_SUB;
+                    inst->src2 = inst->src1;
+                    inst->src1 = (IROperand){0};
+                    changed = true;
+                    break;
+                }
                 /* x / 1 => x */
                 if (is_imm2 && imm2 == 1) {
                     inst->op = IR_MOV;

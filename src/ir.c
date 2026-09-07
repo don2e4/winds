@@ -385,6 +385,16 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
             return lower_expr(mod, fn, expr->comma.right);
 
         case AST_BINARY: {
+            if (expr->binary.op == TOK_MINUS && expr->binary.right->kind == AST_UNARY &&
+                expr->binary.right->unary.op == TOK_MINUS) {
+                IRInst *add = make_inst(arena, IR_ADD);
+                add->src1 = lower_expr(mod, fn, expr->binary.left);
+                add->src2 = lower_expr(mod, fn, expr->binary.right->unary.operand);
+                res.vreg = alloc_vreg(fn);
+                add->dest = res;
+                ir_emit(fn, add);
+                return res;
+            }
             if (expr->binary.op == TOK_LOG_AND) {
                 const char *false_lbl = gen_label(mod, "land_false");
                 const char *end_lbl = gen_label(mod, "land_end");
@@ -510,6 +520,20 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
         }
 
         case AST_UNARY: {
+            if ((expr->unary.op == TOK_MINUS || expr->unary.op == TOK_TILDE) &&
+                expr->unary.operand->kind == AST_UNARY &&
+                expr->unary.operand->unary.op == expr->unary.op)
+                return lower_expr(mod, fn, expr->unary.operand->unary.operand);
+            if (expr->unary.op == TOK_TILDE) {
+                IRInst *inst = make_inst(arena, IR_XOR);
+                inst->src1 = lower_expr(mod, fn, expr->unary.operand);
+                inst->src2.imm = -1;
+                res.vreg = alloc_vreg(fn);
+                inst->dest = res;
+                ir_emit(fn, inst);
+                return res;
+            }
+
             SourceLoc loc = expr->loc;
             (void)loc;
             if (expr->unary.op == TOK_AMP) {
@@ -813,6 +837,11 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
         }
 
         case AST_CALL: {
+            if (expr->call.name && !strcmp(expr->call.name, "__winds_va_start") &&
+                (!fn->va_save_offset || expr->call.arg_count != 1)) {
+                diag_report(DIAG_ERROR, expr->loc, "va_start requires a variadic function");
+                return res;
+            }
             if (!expr->call.is_method && expr->type && expr->type->kind == TYPE_CLASS &&
                 expr->call.callee_sym && expr->call.callee_sym->kind == SYM_CLASS) {
                 int obj_size = expr->type->size > 0 ? (int)expr->type->size : 8;
@@ -1057,6 +1086,10 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                 ir_emit(fn, add);
             }
 
+            if (expr->type && (expr->type->kind == TYPE_ARRAY || expr->type->kind == TYPE_CLASS)) {
+                res.vreg = addr_vreg;
+                return res;
+            }
             res.vreg = alloc_vreg(fn);
             IRInst *load = make_inst(arena, IR_LOAD);
             load->dest = res;
@@ -1113,12 +1146,15 @@ static void lower_stmt(IRModule *mod, IRFunction *fn, ASTNode *stmt, const char 
                     } else if (stmt->var_decl.init && stmt->var_decl.init->kind == AST_INIT_LIST) {
                         global->is_init = true;
                         global->init_count = stmt->var_decl.init->init_list.count;
-                        global->elem_size = sym->type && sym->type->kind == TYPE_ARRAY
-                            ? (int)sym->type->array.base->size : 8;
+                        Type *scalar = sym->type;
+                        while (scalar->kind == TYPE_ARRAY) scalar = scalar->array.base;
+                        global->elem_size = (int)scalar->size;
                         global->init_values = arena_alloc_zero(arena, sizeof(int64_t) * (size_t)global->init_count);
                         for (int i = 0; i < global->init_count; i++) {
                             ASTNode *item = stmt->var_decl.init->init_list.items[i];
-                            if (item->kind == AST_LIT_INT) global->init_values[i] = item->int_val;
+                            bool ok = true;
+                            global->init_values[i] = eval_integer_constant(item, &ok);
+                            if (!ok) diag_report(DIAG_ERROR, item->loc, "static initializer must be constant");
                         }
                     }
                     global->next = mod->globals;
@@ -1149,7 +1185,9 @@ static void lower_stmt(IRModule *mod, IRFunction *fn, ASTNode *stmt, const char 
                 }
             } else if (stmt->var_decl.init) {
                 if (stmt->var_decl.init->kind == AST_INIT_LIST && sym->type->kind == TYPE_ARRAY) {
-                    int elem_size = (int)sym->type->array.base->size;
+                    Type *scalar = sym->type;
+                    while (scalar->kind == TYPE_ARRAY) scalar = scalar->array.base;
+                    int elem_size = (int)scalar->size;
                     for (int i = 0; i < stmt->var_decl.init->init_list.count; i++) {
                         IROperand value = lower_expr(mod, fn, stmt->var_decl.init->init_list.items[i]);
                         IROperand addr = {.vreg = alloc_vreg(fn)};
@@ -1160,7 +1198,7 @@ static void lower_stmt(IRModule *mod, IRFunction *fn, ASTNode *stmt, const char 
                         IRInst *store = make_inst(arena, IR_STORE);
                         store->dest = addr;
                         store->src1 = value;
-                        store->src2.offset = i * elem_size;
+                        store->dest.offset = i * elem_size;
                         store->size = elem_size;
                         ir_emit(fn, store);
                     }
@@ -1435,6 +1473,11 @@ static void lower_function(IRModule *mod, ASTNode *fn_node) {
                                         fn_node->func_decl.mangled_name,
                                         fn_node->func_decl.stack_size);
     fn->is_global = !fn_node->func_decl.is_static;
+    fn->named_arg_count = fn_node->func_decl.param_count;
+    if (fn_node->func_decl.is_varargs) {
+        fn->stack_size = ((fn->stack_size + 15) & ~15) + 176;
+        fn->va_save_offset = -fn->stack_size;
+    }
 
     /* System V AMD64 ABI: function arguments are in RDI, RSI, RDX, RCX, R8, R9.
        Move parameters from registers into stack slots. */
@@ -1551,12 +1594,15 @@ static void lower_decl(IRModule *mod, ASTNode *decl) {
             } else if (decl->var_decl.init->kind == AST_INIT_LIST) {
                 g->is_init = true;
                 g->init_count = decl->var_decl.init->init_list.count;
-                g->elem_size = decl->var_decl.var_type && decl->var_decl.var_type->kind == TYPE_ARRAY
-                    ? (int)decl->var_decl.var_type->array.base->size : 8;
+                Type *scalar = decl->var_decl.var_type;
+                while (scalar->kind == TYPE_ARRAY) scalar = scalar->array.base;
+                g->elem_size = (int)scalar->size;
                 g->init_values = arena_alloc_zero(mod->arena, sizeof(int64_t) * (size_t)g->init_count);
                 for (int i = 0; i < g->init_count; i++) {
                     ASTNode *item = decl->var_decl.init->init_list.items[i];
-                    if (item->kind == AST_LIT_INT) g->init_values[i] = item->int_val;
+                    bool ok = true;
+                    g->init_values[i] = eval_integer_constant(item, &ok);
+                    if (!ok) diag_report(DIAG_ERROR, item->loc, "global initializer must be constant");
                 }
             }
         }

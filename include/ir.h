@@ -66,6 +66,8 @@ typedef struct IRFunction {
     const char *mangled_name;
     int stack_size;
     bool is_global;
+    int va_save_offset;
+    int named_arg_count;
     IRInst *first_inst;
     IRInst *last_inst;
     int vreg_count;

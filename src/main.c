@@ -7,6 +7,7 @@ static void print_help(const char *prog_name) {
     printf("  %s [options] <inputs...>\n\n", prog_name);
     printf("OPTIONS:\n");
     printf("  -o <file>      Place the output into <file>\n");
+    printf("  -E             Preprocess to stdout or -o output\n");
     printf("  -S             Compile only; do not assemble or link (generate .s)\n");
     printf("  -c             Compile and assemble, but do not link (generate .o)\n");
     printf("  -O<level>      Optimization level (-O0, -O1, -O2) [default: -O1]\n");
@@ -126,6 +127,16 @@ int main(int argc, char **argv) {
             config.color_diagnostics = "never";
         } else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
             config.verbose = true;
+        } else if (strcmp(arg, "-E") == 0 || strcmp(arg, "-e") == 0) {
+            config.preprocessor_only = true;
+        } else if (strcmp(arg, "-pipe") == 0 || strcmp(arg, "-g") == 0 ||
+                   (strlen(arg) == 3 && arg[0] == '-' && arg[1] == 'g' && arg[2] >= '0' && arg[2] <= '3') ||
+                   strncmp(arg, "-std=c", 6) == 0 || strncmp(arg, "-std=gnu", 8) == 0) {
+            /* Compatibility options do not change the supported language subset. */
+        } else if (strcmp(arg, "-pthread") == 0) {
+            if (config.link_arg_count == MAX_DRIVER_OPTIONS || config.define_count == MAX_DRIVER_OPTIONS) return 1;
+            config.link_args[config.link_arg_count++] = arg;
+            config.defines[config.define_count++] = "_REENTRANT=1";
         } else if (strcmp(arg, "-S") == 0 || strcmp(arg, "-s") == 0) {
             config.emit_assembly = true;
         } else if (strcmp(arg, "-c") == 0) {

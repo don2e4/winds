@@ -11,8 +11,8 @@
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/license-mit-7aa2f7.svg" alt="license" /></a>
   <a href="#benchmarks"><img src="https://img.shields.io/badge/compile_time-0.53_ms-9ece6a.svg" alt="speed" /></a>
-  <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-255_kb-e0af68.svg" alt="size" /></a>
-  <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-21_passing-9ece6a.svg" alt="tests" /></a>
+  <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-267_kb-e0af68.svg" alt="size" /></a>
+  <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-26_passing-9ece6a.svg" alt="tests" /></a>
 </p>
 
 ---
@@ -277,6 +277,7 @@ explore the underlying compiler components by expanding the sections below:
 | flag | description |
 |---|---|
 | `-o <file>` | write output binary or object file to `<file>` |
+| `-e` | run preprocessor only and output to stdout or `<file>` |
 | `-s` | compile only to assembly (`.s`) |
 | `-c` | compile and assemble without linking (`.o`) |
 | `-run` | compile and execute directly as a script |
@@ -337,7 +338,7 @@ ctest --test-dir build --output-on-failure
 
 ### test suites
 
-winds includes 21 automated test suites covering syntax, semantics, standard library, and code generation:
+winds includes 26 automated test suites covering syntax, semantics, standard library, and code generation:
 
 - `01_basics.cpp` &mdash; variables, arithmetic precedence, loops, and branches
 - `02_functions.cpp` &mdash; function overloading, pass-by-reference, and recursion
@@ -358,19 +359,25 @@ winds includes 21 automated test suites covering syntax, semantics, standard lib
 - `17_pointers_to_members.cpp` &mdash; pointers to data members and member functions (`.*`, `->*`)
 - `18_macros.cpp` &mdash; parameterized macros, stringification (`#`), token pasting (`##`), `#undef`, `#if`/`#elif`
 - `19_variadic_templates.cpp` &mdash; variadic templates, parameter packs, recursive monomorphization, and standard `<tuple>`
-- `20_multifile.sh` &mdash; multiple translation units, command-line macros, external objects, and C ABI linking
-- `21_c_compat.c` &mdash; C linkage, `do` loops, conditional/comma expressions, and curated C headers
+- `20_multifile.sh` &mdash; multiple translation units, command-line macros, external objects, and c abi linking
+- `21_c_compat.c` &mdash; c linkage, `do` loops, conditional/comma expressions, and curated c headers
+- `22_multidim_arrays.c` &mdash; multidimensional arrays, nested initializers, and row pointer decay
+- `23_unions_and_enums.c` &mdash; c `union` layout, anonymous/standalone `enum` definitions, and `register`/`auto` specifiers
+- `24_branch_fusion.c` &mdash; fused compare-and-branch codegen and algebraic strength reduction
+- `25_preprocessor_e.sh` &mdash; `-e` token emission, default output naming, and toolchain flags
+- `26_varargs.c` &mdash; system v amd64 variable argument abi (`va_list`, `va_start`, `va_arg`, `va_copy`, `va_end`)
 
-`make corpus-test` checks an unchanged, pinned zlib 1.3.1 translation unit by compiling it with winds, linking it to a gcc-built C harness, and validating its checksum output. Set `ZLIB_SOURCE` to an existing checkout for an offline run.
+`make corpus-test` checks an unchanged, pinned zlib 1.3.1 translation unit by compiling it with winds, linking it to a gcc-built c harness, and validating its checksum output. Set `ZLIB_SOURCE` to an existing checkout for an offline run.
 
 ## roadmap
 
 - [x] **phase 1**: script execution mode (`-run`), shebang support, makefile dependency tracking (`-mmd`, `-mp`, `-mf`), warning controls (`-wall`, `-wextra`, `-werror`), colored diagnostics
 - [x] **phase 2**: operator overloading, type aliases (`typedef`, `using`), template class monomorphization, 12 self-contained standard library headers (`<iostream>`, `<string>`, `<vector>`, etc.)
 - [x] **phase 3**: function pointers, pointers to members, parameterized preprocessor macros, variadic templates and standard tuple
-- [x] **phase 4a**: multi-file builds, external object/library linking, C linkage, curated libc headers, and the first pinned real-world zlib corpus gate
-- [ ] **phase 4b**: complete the corpus-driven C foundation required by full zlib, cJSON, and SQLite builds
-- [ ] **phase 4c**: compile pugixml without exceptions, RTTI, or the system C++ standard library
+- [x] **phase 4a**: multi-file builds, external object/library linking, c linkage, curated libc headers, and the first pinned real-world zlib corpus gate
+- [x] **phase 4b**: c foundation expansion (unions, standalone enums, multidimensional arrays, varargs abi, preprocessing mode)
+- [ ] **phase 4c**: complete the corpus-driven c foundation required by full zlib, cjson, and sqlite builds
+- [ ] **phase 4d**: compile pugixml without exceptions, rtti, or the system c++ standard library
 
 ## license
 

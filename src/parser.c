@@ -7,48 +7,38 @@ static ASTNode *parse_statement(Parser *p);
 static ASTNode *parse_expression(Parser *p);
 static ASTNode *parse_assignment(Parser *p);
 static Type *parse_type(Parser *p);
+static ASTNode *parse_enum(Parser *p, bool is_typedef);
 static bool try_parse_fn_ptr_declarator(Parser *p, Type *ret_type, const char **out_name, Type **out_type);
 static bool try_parse_member_ptr_declarator(Parser *p, Type *member_type, const char **out_name, Type **out_type);
-static ASTNode *parse_class_declaration(Parser *p, bool is_struct);
+static ASTNode *parse_class_declaration(Parser *p, bool is_struct, bool is_union);
 
-static int64_t eval_integer_constant(ASTNode *node, bool *ok) {
-    if (!node) { *ok = false; return 0; }
-    if (node->kind == AST_LIT_INT) return node->int_val;
-    if (node->kind == AST_CAST) return eval_integer_constant(node->cast.expr, ok);
-    if (node->kind == AST_UNARY) {
-        int64_t value = eval_integer_constant(node->unary.operand, ok);
-        if (!*ok) return 0;
-        if (node->unary.op == TOK_MINUS) return -value;
-        if (node->unary.op == TOK_PLUS) return value;
-        if (node->unary.op == TOK_TILDE) return ~value;
-        if (node->unary.op == TOK_EXCL) return !value;
-    }
-    if (node->kind == AST_BINARY) {
-        int64_t left = eval_integer_constant(node->binary.left, ok);
-        int64_t right = eval_integer_constant(node->binary.right, ok);
-        if (!*ok) return 0;
-        switch (node->binary.op) {
-            case TOK_PLUS: return left + right;
-            case TOK_MINUS: return left - right;
-            case TOK_STAR: return left * right;
-            case TOK_SLASH: if (right) return left / right; break;
-            case TOK_PERCENT: if (right) return left % right; break;
-            case TOK_SHL: return left << right;
-            case TOK_SHR: return left >> right;
-            case TOK_AMP: return left & right;
-            case TOK_PIPE: return left | right;
-            case TOK_CARET: return left ^ right;
-            default: break;
+static void resolve_enum_constants(Parser *p, ASTNode *node) {
+    if (!node) return;
+    if (node->kind == AST_VAR_REF) {
+        for (EnumConstant *c = p->constants; c; c = c->next) {
+            if (!strcmp(c->name, node->var_ref.name)) {
+                node->kind = AST_LIT_INT;
+                node->int_val = c->value;
+                return;
+            }
         }
+    } else if (node->kind == AST_BINARY) {
+        resolve_enum_constants(p, node->binary.left);
+        resolve_enum_constants(p, node->binary.right);
+    } else if (node->kind == AST_UNARY) resolve_enum_constants(p, node->unary.operand);
+    else if (node->kind == AST_CAST) resolve_enum_constants(p, node->cast.expr);
+    else if (node->kind == AST_CONDITIONAL) {
+        resolve_enum_constants(p, node->conditional.cond);
+        resolve_enum_constants(p, node->conditional.then_expr);
+        resolve_enum_constants(p, node->conditional.else_expr);
     }
-    *ok = false;
-    return 0;
 }
 
 static size_t parse_array_bound(Parser *p) {
     if (p->current.kind == TOK_RBRACKET) return 0;
     ASTNode *bound = parse_expression(p);
     bool ok = true;
+    resolve_enum_constants(p, bound);
     int64_t value = eval_integer_constant(bound, &ok);
     if (!ok || value < 0) {
         diag_report(DIAG_ERROR, bound->loc, "array bound must be a non-negative integer constant");
@@ -233,6 +223,20 @@ static void skip_attributes_and_asm(Parser *p) {
     }
 }
 
+static Type *parse_array_suffix(Parser *p, Type *base) {
+    if (!match(p, TOK_LBRACKET)) return base;
+    size_t count = parse_array_bound(p);
+    expect(p, TOK_RBRACKET, "']' after array bound");
+    Type *inner = parse_array_suffix(p, base);
+    if (inner->kind == TYPE_ARRAY && inner->array.count == 0)
+        diag_report(DIAG_ERROR, p->current.loc, "inner array dimension must have a positive bound");
+    if (inner->size && count > SIZE_MAX / inner->size) {
+        diag_report(DIAG_ERROR, p->current.loc, "array size exceeds address space");
+        count = 0;
+    }
+    return type_array(p->arena, inner, count);
+}
+
 static bool is_declaration_starting(Parser *p) {
     TokenKind k = p->current.kind;
     if (k == TOK_KW_CONST || k == TOK_KW_VOLATILE || k == TOK_KW_RESTRICT ||
@@ -242,7 +246,7 @@ static bool is_declaration_starting(Parser *p) {
     if (k == TOK_KW_VOID || k == TOK_KW_BOOL || k == TOK_KW_CHAR ||
         k == TOK_KW_SHORT || k == TOK_KW_INT || k == TOK_KW_LONG ||
         k == TOK_KW_FLOAT || k == TOK_KW_DOUBLE ||
-        k == TOK_KW_CLASS || k == TOK_KW_STRUCT) {
+        k == TOK_KW_UNION || k == TOK_KW_ENUM || k == TOK_KW_REGISTER || k == TOK_KW_AUTO || k == TOK_KW_CLASS || k == TOK_KW_STRUCT) {
         return true;
     }
     if (k == TOK_IDENT) {
@@ -282,7 +286,7 @@ static bool is_sizeof_type(Parser *p) {
         k == TOK_KW_VOID || k == TOK_KW_BOOL || k == TOK_KW_CHAR ||
         k == TOK_KW_SHORT || k == TOK_KW_INT || k == TOK_KW_LONG ||
         k == TOK_KW_FLOAT || k == TOK_KW_DOUBLE ||
-        k == TOK_KW_CLASS || k == TOK_KW_STRUCT) {
+        k == TOK_KW_UNION || k == TOK_KW_ENUM || k == TOK_KW_REGISTER || k == TOK_KW_AUTO || k == TOK_KW_CLASS || k == TOK_KW_STRUCT) {
         return true;
     }
     if (k == TOK_IDENT) {
@@ -327,7 +331,7 @@ static bool is_cast_type(Parser *p) {
         k == TOK_KW_VOID || k == TOK_KW_BOOL || k == TOK_KW_CHAR ||
         k == TOK_KW_SHORT || k == TOK_KW_INT || k == TOK_KW_LONG ||
         k == TOK_KW_FLOAT || k == TOK_KW_DOUBLE ||
-        k == TOK_KW_CLASS || k == TOK_KW_STRUCT) {
+        k == TOK_KW_UNION || k == TOK_KW_ENUM || k == TOK_KW_REGISTER || k == TOK_KW_AUTO || k == TOK_KW_CLASS || k == TOK_KW_STRUCT) {
         return true;
     }
     if (k == TOK_IDENT) {
@@ -540,6 +544,14 @@ static bool try_parse_fn_ptr_declarator(Parser *p, Type *ret_type, const char **
         return false;
     }
 
+    if (!is_member_fn && check(p, TOK_LBRACKET)) {
+        Type *array_type = parse_array_suffix(p, ret_type);
+        for (int i = 0; i < ptr_depth; i++) array_type = type_ptr(p->arena, array_type);
+        if (is_array) array_type = type_array(p->arena, array_type, arr_size);
+        if (out_name) *out_name = name;
+        if (out_type) *out_type = array_type;
+        return true;
+    }
     if (!match(p, TOK_LPAREN)) {
         *p = saved;
         return false;
@@ -617,6 +629,7 @@ static bool try_parse_fn_ptr_declarator(Parser *p, Type *ret_type, const char **
 
 static Type *parse_type(Parser *p) {
     SourceLoc loc = p->current.loc;
+    bool is_union = false;
     bool is_const = false;
     bool has_void = false;
     bool has_bool = false;
@@ -630,7 +643,7 @@ static Type *parse_type(Parser *p) {
     bool has_double = false;
 
     while (1) {
-        if (match(p, TOK_KW_EXTENSION)) {
+        if (match(p, TOK_KW_REGISTER) || match(p, TOK_KW_AUTO) || match(p, TOK_KW_EXTENSION)) {
             continue;
         }
         if (check(p, TOK_KW_ATTRIBUTE)) {
@@ -692,15 +705,19 @@ static Type *parse_type(Parser *p) {
         base = g_type_void;
     } else if (has_bool) {
         base = g_type_bool;
-    } else if (has_float) {
-        base = g_type_int;
-    } else if (has_double) {
-        base = g_type_long;
+    } else if (has_float || has_double) {
+        base = type_new(p->arena, has_double ? TYPE_LONG : TYPE_INT);
+        *base = *(has_double ? g_type_long : g_type_int);
+        base->unsupported_float = true;
+        base->name = has_double ? "double" : "float";
     } else if (has_char) {
         base = g_type_char;
     } else if (long_count > 0) {
         base = g_type_long;
     } else if (has_short || has_int || has_signed || has_unsigned) {
+        base = g_type_int;
+    } else if (match(p, TOK_KW_ENUM)) {
+        expect(p, TOK_IDENT, "enum tag");
         base = g_type_int;
     } else if (match(p, TOK_KW_TYPEOF)) {
         if (match(p, TOK_LPAREN)) {
@@ -712,10 +729,10 @@ static Type *parse_type(Parser *p) {
             }
         }
         base = g_type_long;
-    } else if (match(p, TOK_KW_STRUCT) || match(p, TOK_KW_CLASS)) {
+    } else if ((is_union = match(p, TOK_KW_UNION)) || match(p, TOK_KW_STRUCT) || match(p, TOK_KW_CLASS)) {
         skip_gnu_attributes(p);
         if (check(p, TOK_LBRACE)) {
-            ASTNode *cls = parse_class_declaration(p, true);
+            ASTNode *cls = parse_class_declaration(p, true, is_union);
             if (p->pending_decl_count < 32) {
                 p->pending_decls[p->pending_decl_count++] = cls;
             }
@@ -724,7 +741,7 @@ static Type *parse_type(Parser *p) {
             base->size = 8;
             base->align = 8;
         } else if (check(p, TOK_IDENT) && p->peek.kind == TOK_LBRACE) {
-            ASTNode *cls = parse_class_declaration(p, true);
+            ASTNode *cls = parse_class_declaration(p, true, is_union);
             if (p->pending_decl_count < 32) {
                 p->pending_decls[p->pending_decl_count++] = cls;
             }
@@ -1164,7 +1181,12 @@ static ASTNode *parse_unary(Parser *p) {
             node->type = g_type_long;
             return node;
         }
-        expect(p, TOK_LPAREN, "'(' after sizeof");
+        if (!match(p, TOK_LPAREN)) {
+            ASTNode *node = ast_new(p->arena, AST_SIZEOF, sloc);
+            node->sizeof_expr.target_expr = parse_unary(p);
+            node->type = g_type_long;
+            return node;
+        }
         if (is_sizeof_type(p) || is_declaration_starting(p)) {
             Type *t = parse_type(p);
             expect(p, TOK_RPAREN, "')' after sizeof(type)");
@@ -1323,6 +1345,7 @@ static ASTNode *parse_initializer(Parser *p) {
 /* Statement parsing */
 static ASTNode *parse_block(Parser *p) {
     SourceLoc loc = p->current.loc;
+    EnumConstant *saved_constants = p->constants;
     expect(p, TOK_LBRACE, "'{' to begin block");
 
     ASTNode **stmts = NULL;
@@ -1337,11 +1360,30 @@ static ASTNode *parse_block(Parser *p) {
     ASTNode *block = ast_new(p->arena, AST_STMT_BLOCK, loc);
     block->block.stmts = stmts;
     block->block.count = count;
+    p->constants = saved_constants;
     return block;
 }
 
 static ASTNode *parse_statement(Parser *p) {
     SourceLoc loc = p->current.loc;
+    if (check(p, TOK_KW_ENUM)) {
+        Parser saved = *p;
+        advance(p);
+        if (check(p, TOK_LBRACE) || (check(p, TOK_IDENT) && p->peek.kind == TOK_LBRACE)) {
+            int pending = p->pending_decl_count;
+            ASTNode *decl = parse_enum(p, false);
+            if (p->pending_decl_count > pending) {
+                ASTNode *list = ast_new(p->arena, AST_STMT_DECL_LIST, loc);
+                list->block.count = 2;
+                list->block.stmts = arena_alloc(p->arena, sizeof(ASTNode *) * 2);
+                list->block.stmts[0] = decl;
+                list->block.stmts[1] = p->pending_decls[--p->pending_decl_count];
+                return list;
+            }
+            return decl;
+        }
+        *p = saved;
+    }
 
     if (check(p, TOK_IDENT) && p->peek.kind == TOK_COLON) {
         ASTNode *stmt = ast_new(p->arena, AST_STMT_LABEL, loc);
@@ -1540,6 +1582,7 @@ static ASTNode *parse_statement(Parser *p) {
             Token name_tok = expect(p, TOK_IDENT, "name in typedef");
             name = name_tok.str_val;
         }
+        aliased_type = parse_array_suffix(p, aliased_type);
         expect(p, TOK_SEMICOLON, "';' after typedef");
         ASTNode *td = ast_new(p->arena, AST_DECL_TYPEDEF, loc);
         td->typedef_decl.name = name;
@@ -1564,11 +1607,7 @@ static ASTNode *parse_statement(Parser *p) {
         } else {
             Token name_tok = expect(p, TOK_IDENT, "variable name");
             var_name = name_tok.str_val;
-            if (match(p, TOK_LBRACKET)) {
-                size_t arr_size = parse_array_bound(p);
-                expect(p, TOK_RBRACKET, "']' in array variable");
-                t = type_array(p->arena, t, arr_size);
-            }
+            t = parse_array_suffix(p, t);
         }
         ASTNode *var = ast_new(p->arena, AST_STMT_VAR_DECL, loc);
         var->var_decl.var_type = t;
@@ -1665,6 +1704,8 @@ static int parse_param_list(Parser *p, ASTNode ***out_params, bool *out_varargs)
                 pname = p->current.str_val;
                 advance(p);
             }
+            pt = parse_array_suffix(p, pt);
+            if (pt->kind == TYPE_ARRAY) pt = type_ptr(p->arena, pt->array.base);
             skip_attributes_and_asm(p);
             if (match(p, TOK_ELLIPSIS)) {
                 is_pack = true;
@@ -1726,8 +1767,9 @@ static const char *parse_function_or_operator_name(Parser *p, SourceLoc *out_loc
     return ident.str_val;
 }
 
-static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
+static ASTNode *parse_class_declaration(Parser *p, bool is_struct, bool is_union) {
     SourceLoc loc = p->current.loc;
+    int pending_start = p->pending_decl_count;
     skip_attributes_and_asm(p);
     const char *raw_name = NULL;
     if (check(p, TOK_LBRACE)) {
@@ -2013,11 +2055,7 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
             append_node(p, &methods, &method_count, &method_capacity, fn);
         } else {
             /* Array field: int data[4]; */
-            if (match(p, TOK_LBRACKET)) {
-                size_t arr_size = parse_array_bound(p);
-                expect(p, TOK_RBRACKET, "']' in array field");
-                t = type_array(p->arena, t, arr_size);
-            }
+            t = parse_array_suffix(p, t);
 
             /* Field declaration */
             Field *f = arena_alloc_zero(p->arena, sizeof(Field));
@@ -2035,8 +2073,17 @@ static ASTNode *parse_class_declaration(Parser *p, bool is_struct) {
 
     p->current_class = prev_class;
 
+    int keep = pending_start;
+    for (int i = pending_start; i < p->pending_decl_count; i++) {
+        ASTNode *nested = p->pending_decls[i];
+        if (nested->kind == AST_DECL_CLASS)
+            append_node(p, &methods, &method_count, &method_capacity, nested);
+        else p->pending_decls[keep++] = nested;
+    }
+    p->pending_decl_count = keep;
     ASTNode *cls = ast_new(p->arena, AST_DECL_CLASS, loc);
     cls->class_decl.name = class_name;
+    cls->class_decl.is_union = is_union;
     cls->class_decl.fields = fields_head;
     cls->class_decl.methods = methods;
     cls->class_decl.method_count = method_count;
@@ -2077,7 +2124,67 @@ static ASTNode *parse_namespace(Parser *p) {
     return ns;
 }
 
+static ASTNode *parse_enum(Parser *p, bool is_typedef) {
+    SourceLoc loc = p->current.loc;
+    const char *tag = "__anonymous_enum";
+    if (check(p, TOK_IDENT)) { tag = p->current.str_val; advance(p); }
+    expect(p, TOK_LBRACE, "'{' in enum definition");
+    const char *names[1024];
+    int64_t values[1024];
+    int count = 0;
+    int64_t value = 0;
+    while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+        Token item = expect(p, TOK_IDENT, "enumerator");
+        if (match(p, TOK_ASSIGN)) {
+            bool ok = true;
+            ASTNode *expr = parse_assignment(p);
+            resolve_enum_constants(p, expr);
+            value = eval_integer_constant(expr, &ok);
+            if (!ok) diag_report(DIAG_ERROR, item.loc, "enumerator must be an integer constant");
+        }
+        if (count == 1024) { diag_report(DIAG_ERROR, item.loc, "too many enumerators"); break; }
+        names[count] = item.str_val;
+        values[count++] = value;
+        EnumConstant *c = arena_alloc(p->arena, sizeof(*c));
+        *c = (EnumConstant){item.str_val, value, p->constants};
+        p->constants = c;
+        value = (int64_t)((uint64_t)value + 1);
+        if (!match(p, TOK_COMMA)) break;
+    }
+    expect(p, TOK_RBRACE, "'}' after enum");
+    ASTNode *decl = ast_new(p->arena, AST_DECL_ENUM, loc);
+    decl->enum_decl.name = tag;
+    decl->enum_decl.count = count;
+    decl->enum_decl.item_names = arena_alloc(p->arena, sizeof(char *) * count);
+    decl->enum_decl.item_values = arena_alloc(p->arena, sizeof(int64_t) * count);
+    memcpy(decl->enum_decl.item_names, names, sizeof(char *) * count);
+    memcpy(decl->enum_decl.item_values, values, sizeof(int64_t) * count);
+    parser_add_type(p, tag);
+    if (is_typedef) {
+        Token alias = expect(p, TOK_IDENT, "enum typedef name");
+        decl->enum_decl.name = alias.str_val;
+        parser_add_type(p, alias.str_val);
+    } else if (check(p, TOK_IDENT)) {
+        ASTNode *var = ast_new(p->arena, AST_STMT_VAR_DECL, loc);
+        var->var_decl.name = p->current.str_val;
+        var->var_decl.var_type = g_type_int;
+        advance(p);
+        if (match(p, TOK_ASSIGN)) var->var_decl.init = parse_assignment(p);
+        if (p->pending_decl_count < 32) p->pending_decls[p->pending_decl_count++] = var;
+    }
+    expect(p, TOK_SEMICOLON, "';' after enum");
+    return decl;
+}
+
 static ASTNode *parse_declaration(Parser *p) {
+    if (p->pending_decl_count > 0) return p->pending_decls[--p->pending_decl_count];
+    if (check(p, TOK_KW_ENUM)) {
+        Parser saved = *p;
+        advance(p);
+        if (check(p, TOK_LBRACE) || (check(p, TOK_IDENT) && p->peek.kind == TOK_LBRACE))
+            return parse_enum(p, false);
+        *p = saved;
+    }
     if (p->pending_decl_count > 0) {
         return p->pending_decls[--p->pending_decl_count];
     }
@@ -2146,55 +2253,14 @@ static ASTNode *parse_declaration(Parser *p) {
     if (match(p, TOK_KW_TYPEDEF)) {
         SourceLoc loc = p->current.loc;
         skip_attributes_and_asm(p);
-        if (match(p, TOK_KW_ENUM)) {
-            if (check(p, TOK_IDENT) && p->peek.kind == TOK_LBRACE) advance(p);
-            expect(p, TOK_LBRACE, "'{' in enum definition");
-            const char *names[256];
-            int64_t values[256];
-            int count = 0;
-            int64_t next_value = 0;
-            while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
-                Token item = expect(p, TOK_IDENT, "enumerator name");
-                int64_t value = next_value;
-                if (match(p, TOK_ASSIGN)) {
-                    bool negative = match(p, TOK_MINUS);
-                    if (check(p, TOK_INT_LIT)) {
-                        value = negative ? -p->current.int_val : p->current.int_val;
-                        advance(p);
-                    } else {
-                        /* ponytail: use the shared constant-expression evaluator when a corpus needs non-literals. */
-                        diag_report(DIAG_ERROR, p->current.loc, "enum value must currently be an integer literal");
-                        parse_assignment(p);
-                    }
-                }
-                if (count < 256) {
-                    names[count] = item.str_val;
-                    values[count++] = value;
-                }
-                next_value = value + 1;
-                if (!match(p, TOK_COMMA)) break;
-            }
-            expect(p, TOK_RBRACE, "'}' after enum definition");
-            Token alias = expect(p, TOK_IDENT, "enum typedef name");
-            expect(p, TOK_SEMICOLON, "';' after enum typedef");
-            ASTNode *decl = ast_new(p->arena, AST_DECL_ENUM, loc);
-            decl->enum_decl.name = alias.str_val;
-            decl->enum_decl.count = count;
-            if (count > 0) {
-                decl->enum_decl.item_names = arena_alloc(p->arena, sizeof(char *) * (size_t)count);
-                decl->enum_decl.item_values = arena_alloc(p->arena, sizeof(int64_t) * (size_t)count);
-                memcpy(decl->enum_decl.item_names, names, sizeof(char *) * (size_t)count);
-                memcpy(decl->enum_decl.item_values, values, sizeof(int64_t) * (size_t)count);
-            }
-            parser_add_type(p, alias.str_val);
-            return decl;
-        }
-        if (check(p, TOK_KW_STRUCT) || check(p, TOK_KW_CLASS)) {
+        if (match(p, TOK_KW_ENUM)) return parse_enum(p, true);
+        if (check(p, TOK_KW_UNION) || check(p, TOK_KW_STRUCT) || check(p, TOK_KW_CLASS)) {
+            bool is_union = check(p, TOK_KW_UNION);
             bool is_struct = (p->current.kind == TOK_KW_STRUCT);
             advance(p); /* Consume 'struct' or 'class' */
             skip_attributes_and_asm(p);
             if (check(p, TOK_LBRACE) || (check(p, TOK_IDENT) && p->peek.kind == TOK_LBRACE)) {
-                ASTNode *cls = parse_class_declaration(p, is_struct);
+                ASTNode *cls = parse_class_declaration(p, is_struct, is_union);
                 Type *aliased_type = type_new(p->arena, TYPE_CLASS);
                 aliased_type->name = cls->class_decl.name;
                 aliased_type->size = 8;
@@ -2247,6 +2313,7 @@ static ASTNode *parse_declaration(Parser *p) {
             name = name_tok.str_val;
             skip_attributes_and_asm(p);
         }
+        aliased_type = parse_array_suffix(p, aliased_type);
         expect(p, TOK_SEMICOLON, "';' after typedef");
         ASTNode *td = ast_new(p->arena, AST_DECL_TYPEDEF, loc);
         td->typedef_decl.name = name;
@@ -2300,15 +2367,35 @@ static ASTNode *parse_declaration(Parser *p) {
     }
 
     if (match(p, TOK_KW_CLASS)) {
-        ASTNode *cls = parse_class_declaration(p, false);
+        ASTNode *cls = parse_class_declaration(p, false, false);
         match(p, TOK_SEMICOLON);
         return cls;
     }
 
-    if (match(p, TOK_KW_STRUCT)) {
-        ASTNode *cls = parse_class_declaration(p, true);
-        match(p, TOK_SEMICOLON);
-        return cls;
+    if ((check(p, TOK_KW_STRUCT) || check(p, TOK_KW_UNION)) &&
+        (p->peek.kind == TOK_IDENT || p->peek.kind == TOK_LBRACE)) {
+        Parser saved = *p;
+        advance(p);
+        if (check(p, TOK_IDENT)) advance(p);
+        bool definition = check(p, TOK_LBRACE) || check(p, TOK_SEMICOLON);
+        *p = saved;
+        if (definition) {
+            bool is_union = match(p, TOK_KW_UNION);
+            if (!is_union) advance(p);
+            ASTNode *cls = parse_class_declaration(p, true, is_union);
+            if (check(p, TOK_IDENT)) {
+                ASTNode *var = ast_new(p->arena, AST_STMT_VAR_DECL, p->current.loc);
+                var->var_decl.name = p->current.str_val;
+                var->var_decl.var_type = type_new(p->arena, TYPE_CLASS);
+                var->var_decl.var_type->name = cls->class_decl.name;
+                advance(p);
+                var->var_decl.var_type = parse_array_suffix(p, var->var_decl.var_type);
+                if (match(p, TOK_ASSIGN)) var->var_decl.init = parse_initializer(p);
+                if (p->pending_decl_count < 32) p->pending_decls[p->pending_decl_count++] = var;
+            }
+            match(p, TOK_SEMICOLON);
+            return cls;
+        }
     }
 
     /* Out-of-line method / constructor / destructor definition:
@@ -2431,11 +2518,7 @@ static ASTNode *parse_declaration(Parser *p) {
     }
 
     /* Global variable declaration */
-    if (match(p, TOK_LBRACKET)) {
-        size_t arr_size = parse_array_bound(p);
-        expect(p, TOK_RBRACKET, "']' in global array variable");
-        ret_type = type_array(p->arena, ret_type, arr_size);
-    }
+    ret_type = parse_array_suffix(p, ret_type);
     ASTNode *var = ast_new(p->arena, AST_STMT_VAR_DECL, loc);
     var->var_decl.var_type = ret_type;
     var->var_decl.name = fn_name;
@@ -2479,7 +2562,7 @@ ASTNode *parser_parse(Parser *p) {
     int count = 0;
     int capacity = 0;
 
-    while (!check(p, TOK_EOF)) {
+    while (!check(p, TOK_EOF) || p->pending_decl_count) {
         ASTNode *decl = parse_declaration(p);
         if (decl) {
             append_node(p, &decls, &count, &capacity, decl);

@@ -423,3 +423,56 @@ void ast_dump(ASTNode *node, int indent) {
             break;
     }
 }
+
+int64_t eval_integer_constant(ASTNode *node, bool *ok) {
+    if (!node) { *ok = false; return 0; }
+    if (node->kind == AST_LIT_INT) return node->int_val;
+    if (node->kind == AST_LIT_BOOL) return node->bool_val;
+    if (node->kind == AST_SIZEOF) {
+        Type *t = node->sizeof_expr.target_type;
+        if (!t && node->sizeof_expr.target_expr) t = node->sizeof_expr.target_expr->type;
+        if (t && t->kind != TYPE_CLASS) return (int64_t)t->size;
+    }
+    if (node->kind == AST_CONDITIONAL) {
+        int64_t condition = eval_integer_constant(node->conditional.cond, ok);
+        if (!*ok) return 0;
+        return eval_integer_constant(condition ? node->conditional.then_expr : node->conditional.else_expr, ok);
+    }
+    if (node->kind == AST_CAST) return eval_integer_constant(node->cast.expr, ok);
+    if (node->kind == AST_UNARY) {
+        int64_t value = eval_integer_constant(node->unary.operand, ok);
+        if (!*ok) return 0;
+        if (node->unary.op == TOK_MINUS) return (int64_t)(0 - (uint64_t)value);
+        if (node->unary.op == TOK_PLUS) return value;
+        if (node->unary.op == TOK_TILDE) return ~value;
+        if (node->unary.op == TOK_EXCL) return !value;
+    }
+    if (node->kind == AST_BINARY) {
+        int64_t left = eval_integer_constant(node->binary.left, ok);
+        int64_t right = eval_integer_constant(node->binary.right, ok);
+        if (!*ok) return 0;
+        switch (node->binary.op) {
+            case TOK_PLUS: return (int64_t)((uint64_t)left + (uint64_t)right);
+            case TOK_MINUS: return (int64_t)((uint64_t)left - (uint64_t)right);
+            case TOK_STAR: return (int64_t)((uint64_t)left * (uint64_t)right);
+            case TOK_SLASH: if (right && !(left == INT64_MIN && right == -1)) return left / right; break;
+            case TOK_PERCENT: if (right && !(left == INT64_MIN && right == -1)) return left % right; break;
+            case TOK_SHL: if (right >= 0 && right < 64) return (int64_t)((uint64_t)left << right); break;
+            case TOK_SHR: if (right >= 0 && right < 64) return left >> right; break;
+            case TOK_AMP: return left & right;
+            case TOK_PIPE: return left | right;
+            case TOK_CARET: return left ^ right;
+            case TOK_EQ_EQ: return left == right;
+            case TOK_EXCL_EQ: return left != right;
+            case TOK_LESS: return left < right;
+            case TOK_LESS_EQ: return left <= right;
+            case TOK_GREATER: return left > right;
+            case TOK_GREATER_EQ: return left >= right;
+            case TOK_LOG_AND: return left && right;
+            case TOK_LOG_OR: return left || right;
+            default: break;
+        }
+    }
+    *ok = false;
+    return 0;
+}

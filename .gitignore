@@ -4,3 +4,5 @@ tests/*.out
 tests/*.s
 tests/*.o
 build_cmake/
+__pycache__/
+*.pyc

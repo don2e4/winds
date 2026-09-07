@@ -15,6 +15,7 @@ typedef struct {
     const char *output_file;
     const char *include_paths[64];
     int include_path_count;
+    bool preprocessor_only; /* -E */
     bool emit_assembly; /* -S */
     bool compile_only;  /* -c */
     bool emit_ast;      /* --emit-ast */

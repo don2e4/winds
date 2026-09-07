@@ -13,7 +13,14 @@ typedef struct TypeNameNode {
     struct TypeNameNode *next;
 } TypeNameNode;
 
+typedef struct EnumConstant {
+    const char *name;
+    int64_t value;
+    struct EnumConstant *next;
+} EnumConstant;
+
 typedef struct {
+    EnumConstant *constants;
     Lexer lexer;
     Token current;
     Token peek;

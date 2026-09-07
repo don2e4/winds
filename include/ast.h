@@ -39,6 +39,7 @@ struct Type {
     TypeKind kind;
     size_t size;
     size_t align;
+    bool unsupported_float;
     const char *name; /* Name for classes/primitives */
 
     /* Type details */
@@ -58,6 +59,7 @@ struct Type {
             Field *fields;
             size_t total_size;
             bool is_struct;
+            bool is_union;
         } cls;
         struct {
             struct Type *return_type;
@@ -75,6 +77,8 @@ struct Type {
         } member_func_ptr;
     };
 };
+
+int64_t eval_integer_constant(ASTNode *node, bool *ok);
 
 /* Builtin primitive types */
 extern Type *g_type_void;
@@ -367,6 +371,7 @@ struct ASTNode {
         struct {
             const char *name;
             Type *class_type;
+            bool is_union;
             Field *fields;
             ASTNode **methods;
             int method_count;

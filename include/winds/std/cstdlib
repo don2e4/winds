@@ -12,8 +12,10 @@ extern void abort();
 extern int atoi(const char *nptr);
 extern int abs(int j);
 
+#ifdef __cplusplus
 namespace std {
     using size_t = unsigned long;
 }
+#endif
 
 #endif

@@ -94,6 +94,12 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
     fprintf(out, "\t.cfi_def_cfa_register 6\n");
     fprintf(out, "\tsubq\t$%d, %%rsp\n", total_stack);
 
+    if (fn->va_save_offset) {
+        const char *args[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+        for (int i = 0; i < 6; i++) fprintf(out, "\tmovq\t%s, %d(%%rbp)\n", args[i], fn->va_save_offset + i * 8);
+        for (int i = 0; i < 8; i++) fprintf(out, "\tmovups\t%%xmm%d, %d(%%rbp)\n", i, fn->va_save_offset + 48 + i * 16);
+    }
+
     /* Save used callee-saved registers into their reserved stack slots */
     for (int r = PHYS_REG_RBX; r <= PHYS_REG_R15; r++) {
         if (ra->used_regs[r]) {
@@ -104,6 +110,14 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
     char epilogue_label[128];
     snprintf(epilogue_label, sizeof(epilogue_label), ".L_ret_%s", func_name);
 
+    int *uses = arena_alloc_zero(arena, sizeof(int) * fn->vreg_count);
+    for (IRInst *i = fn->first_inst; i; i = i->next) {
+        if (i->src1.vreg > 0) uses[i->src1.vreg]++;
+        if (i->src2.vreg > 0) uses[i->src2.vreg]++;
+        if (i->op == IR_STORE && i->dest.vreg > 0) uses[i->dest.vreg]++;
+        for (int j = 0; j < i->call_arg_count; j++)
+            if (i->call_args[j].vreg > 0) uses[i->call_args[j].vreg]++;
+    }
     for (IRInst *inst = fn->first_inst; inst != NULL; inst = inst->next) {
         switch (inst->op) {
             case IR_LABEL:
@@ -228,6 +242,11 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
 
             case IR_ADD:
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                if (!inst->src2.vreg && inst->src2.imm == 1) {
+                    fprintf(out, "\tincq\t%%rax\n");
+                    emit_store_rax(out, inst->dest, ra, local_stack);
+                    break;
+                }
                 emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\taddq\t%%rcx, %%rax\n");
                 emit_store_rax(out, inst->dest, ra, local_stack);
@@ -235,6 +254,11 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
 
             case IR_SUB:
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                if (!inst->src2.vreg && inst->src2.imm == 1) {
+                    fprintf(out, "\tdecq\t%%rax\n");
+                    emit_store_rax(out, inst->dest, ra, local_stack);
+                    break;
+                }
                 emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\tsubq\t%%rcx, %%rax\n");
                 emit_store_rax(out, inst->dest, ra, local_stack);
@@ -317,6 +341,17 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                 emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\tcmpq\t%%rcx, %%rax\n");
 
+                IRInst *branch = inst->next;
+                if (branch && inst->dest.vreg > 0 && uses[inst->dest.vreg] == 1 &&
+                    branch->src1.vreg == inst->dest.vreg &&
+                    (branch->op == IR_JMP_IF_ZERO || branch->op == IR_JMP_IF_NOT_ZERO)) {
+                    const char *normal[] = {"je", "jne", "jl", "jle", "jg", "jge"};
+                    const char *inverse[] = {"jne", "je", "jge", "jg", "jle", "jl"};
+                    int cc = inst->op - IR_CMP_EQ;
+                    fprintf(out, "\t%s\t%s\n", branch->op == IR_JMP_IF_ZERO ? inverse[cc] : normal[cc], branch->dest.label);
+                    inst = branch;
+                    break;
+                }
                 const char *set_cc = "sete";
                 switch (inst->op) {
                     case IR_CMP_EQ: set_cc = "sete"; break;
@@ -362,6 +397,26 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
             }
 
             case IR_CALL: {
+                if (inst->src1.label && !strcmp(inst->src1.label, "__winds_va_arg_gp")) {
+                    emit_operand_to_rax(out, inst->call_args[0], ra, local_stack);
+                    fprintf(out, "\tmovl\t(%%rax), %%ecx\n\tcmpl\t$48, %%ecx\n");
+                    fprintf(out, "\tjae\t.L_va_stack_%s_%d\n", func_name, inst->dest.vreg);
+                    fprintf(out, "\taddl\t$8, (%%rax)\n\taddq\t16(%%rax), %%rcx\n");
+                    fprintf(out, "\tjmp\t.L_va_done_%s_%d\n.L_va_stack_%s_%d:\n", func_name, inst->dest.vreg, func_name, inst->dest.vreg);
+                    fprintf(out, "\tmovq\t8(%%rax), %%rcx\n\taddq\t$8, 8(%%rax)\n");
+                    fprintf(out, ".L_va_done_%s_%d:\n", func_name, inst->dest.vreg);
+                    emit_store_rcx(out, inst->dest, ra, local_stack);
+                    break;
+                }
+                if (inst->src1.label && !strcmp(inst->src1.label, "__winds_va_start")) {
+                    emit_operand_to_rax(out, inst->call_args[0], ra, local_stack);
+                    int gp = fn->named_arg_count < 6 ? fn->named_arg_count * 8 : 48;
+                    int stack = fn->named_arg_count > 6 ? (fn->named_arg_count - 6) * 8 : 0;
+                    fprintf(out, "\tmovl\t$%d, (%%rax)\n\tmovl\t$48, 4(%%rax)\n", gp);
+                    fprintf(out, "\tleaq\t%d(%%rbp), %%rcx\n\tmovq\t%%rcx, 8(%%rax)\n", 16 + stack);
+                    fprintf(out, "\tleaq\t%d(%%rbp), %%rcx\n\tmovq\t%%rcx, 16(%%rax)\n", fn->va_save_offset);
+                    break;
+                }
                 int n_stack = (inst->call_arg_count > 6) ? (inst->call_arg_count - 6) : 0;
                 int stack_arg_space = 0;
                 if (n_stack > 0) {

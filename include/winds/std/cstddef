@@ -5,10 +5,12 @@ typedef unsigned long size_t;
 typedef long ptrdiff_t;
 typedef void *nullptr_t;
 
+#ifdef __cplusplus
 namespace std {
     using size_t = unsigned long;
     using ptrdiff_t = long;
     using nullptr_t = void*;
 }
+#endif
 
 #endif

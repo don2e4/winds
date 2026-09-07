@@ -13,6 +13,9 @@ typedef enum {
     /* Keywords */
     TOK_KW_CLASS,
     TOK_KW_STRUCT,
+    TOK_KW_UNION,
+    TOK_KW_REGISTER,
+    TOK_KW_AUTO,
     TOK_KW_ENUM,
     TOK_KW_PUBLIC,
     TOK_KW_PRIVATE,

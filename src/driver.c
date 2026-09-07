@@ -198,6 +198,44 @@ static void emit_dependency_file(const DriverConfig *config, Lexer *lexer) {
     fclose(df);
 }
 
+static void object_name_for(const char *source, char output[1024]);
+
+static int preprocess(Lexer *lexer, const char *path) {
+    FILE *out = path ? fopen(path, "w") : stdout;
+    if (!out) { perror(path); return 1; }
+    int line = -1;
+    const char *file = NULL;
+    for (;;) {
+        Token tok = lexer_next(lexer);
+        if (tok.kind == TOK_EOF) break;
+        if (tok.loc.line != line || !file || strcmp(file, tok.loc.file)) {
+            fprintf(out, "\n#line %d\n", tok.loc.line);
+            line = tok.loc.line;
+            file = tok.loc.file;
+        }
+        if (tok.kind == TOK_STR_LIT) {
+            fputc('"', out);
+            for (int64_t i = 0; i < tok.int_val; i++) {
+                unsigned char c = (unsigned char)tok.str_val[i];
+                if (c == '"' || c == '\\') { fputc('\\', out); fputc(c, out); }
+                else if (c < 32 || c >= 127) fprintf(out, "\\%03o", c);
+                else fputc(c, out);
+            }
+            fputc('"', out);
+        } else if (tok.kind == TOK_INT_LIT && tok.loc.source_line && tok.loc.length > 0) {
+            fwrite(tok.loc.source_line + tok.loc.col - 1, 1, (size_t)tok.loc.length, out);
+        } else if (tok.kind == TOK_INT_LIT || tok.kind == TOK_CHAR_LIT) {
+            fprintf(out, "%lld", (long long)tok.int_val);
+        } else if (tok.str_val) fputs(tok.str_val, out);
+        else fputs(token_kind_str(tok.kind), out);
+        fputc(' ', out);
+    }
+    fputc('\n', out);
+    int failed = ferror(out) || diag_error_count();
+    if (path && fclose(out)) failed = 1;
+    return failed != 0;
+}
+
 int driver_run(const DriverConfig *config) {
     if (!config->input_file) {
         fprintf(stderr, "winds: error: no input file specified\n");
@@ -230,6 +268,7 @@ int driver_run(const DriverConfig *config) {
     /* 1. Parse */
     Parser parser;
     parser_init(&parser, arena, source, config->input_file);
+    if (is_c_source(config->input_file)) lexer_undefine_macro(&parser.lexer, "__cplusplus");
     for (int i = 0; i < config->undefine_count; i++) {
         lexer_undefine_macro(&parser.lexer, config->undefines[i]);
     }
@@ -289,6 +328,14 @@ int driver_run(const DriverConfig *config) {
         }
     }
 
+    if (config->preprocessor_only) {
+        int result = preprocess(&parser.lexer, config->output_file);
+        parser_destroy(&parser);
+        free(source);
+        arena_destroy(arena);
+        str_intern_destroy();
+        return result;
+    }
     ASTNode *ast = parser_parse(&parser);
 
     if (diag_error_count() > 0) {
@@ -328,6 +375,13 @@ int driver_run(const DriverConfig *config) {
     IRModule *ir_mod = ir_module_create(arena);
     ir_build_from_ast(ir_mod, ast);
 
+    if (diag_error_count()) {
+        parser_destroy(&parser);
+        free(source);
+        arena_destroy(arena);
+        str_intern_destroy();
+        return 1;
+    }
     /* 4. Optimization */
     if (config->opt_level > 0) {
         OptOptions opt_opts = {
@@ -498,9 +552,15 @@ int driver_run_many(const DriverConfig *config) {
     if (config->input_file_count <= 1) {
         DriverConfig one = *config;
         if (one.input_file_count == 1) one.input_file = one.input_files[0];
+        char default_output[1024];
+        if (!one.output_file && !one.preprocessor_only && (one.compile_only || one.emit_assembly)) {
+            object_name_for(one.input_file, default_output);
+            if (one.emit_assembly) default_output[strlen(default_output) - 1] = 's';
+            one.output_file = default_output;
+        }
         return driver_run(&one);
     }
-    if (config->emit_assembly || config->emit_ast || config->emit_ir || config->run_mode) {
+    if (config->preprocessor_only || config->emit_assembly || config->emit_ast || config->emit_ir || config->run_mode) {
         fprintf(stderr, "winds: error: this mode requires exactly one source file\n");
         return 1;
     }

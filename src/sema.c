@@ -1424,13 +1424,18 @@ static void analyze_expr(Sema *s, ASTNode *expr);
 
 static void layout_class(Sema *s, Type *class_type) {
     size_t offset = 0;
-    size_t max_align = 4;
+    size_t max_align = 1;
 
     for (Field *f = class_type->cls.fields; f != NULL; f = f->next) {
         f->type = resolve_type(s, f->type);
         size_t align = f->type->align > 0 ? f->type->align : 4;
         if (align > max_align) max_align = align;
 
+        if (class_type->cls.is_union) {
+            f->offset = 0;
+            if (f->type->size > offset) offset = f->type->size;
+            continue;
+        }
         /* Align offset */
         offset = (offset + align - 1) & ~(align - 1);
         f->offset = (int)offset;
@@ -1443,6 +1448,54 @@ static void layout_class(Sema *s, Type *class_type) {
     class_type->size = offset;
     class_type->align = max_align;
     class_type->cls.total_size = offset;
+}
+
+static void flatten_array_init(Sema *s, Type *type, ASTNode *init, ASTNode **items, size_t start, size_t scalar_size) {
+    if (type->kind != TYPE_ARRAY) {
+        if (init && init->kind == AST_INIT_LIST) {
+            if (init->init_list.count > 1) diag_report(DIAG_ERROR, init->loc, "excess scalar initializer");
+            init = init->init_list.count ? init->init_list.items[0] : NULL;
+        }
+        if (init) items[start] = init;
+        return;
+    }
+    if (!init || init->kind != AST_INIT_LIST) {
+        if (init) diag_report(DIAG_ERROR, init->loc, "expected array initializer list");
+        return;
+    }
+    size_t stride = type->array.base->size / scalar_size;
+    size_t cursor = 0, capacity = type->size / scalar_size;
+    for (int i = 0; i < init->init_list.count; i++) {
+        ASTNode *item = init->init_list.items[i];
+        if (item->kind == AST_INIT_LIST) {
+            cursor = (cursor + stride - 1) / stride * stride;
+            if (cursor + stride > capacity) { diag_report(DIAG_ERROR, item->loc, "excess array initializer"); break; }
+            flatten_array_init(s, type->array.base, item, items, start + cursor, scalar_size);
+            cursor += stride;
+        } else {
+            if (cursor >= capacity) { diag_report(DIAG_ERROR, item->loc, "excess array initializer"); break; }
+            items[start + cursor++] = item;
+        }
+    }
+}
+
+static void normalize_array_init(Sema *s, Type *type, ASTNode *init) {
+    if (!type || type->kind != TYPE_ARRAY || !init || init->kind != AST_INIT_LIST) return;
+    Type *scalar = type;
+    while (scalar->kind == TYPE_ARRAY) scalar = scalar->array.base;
+    if (!type_is_integer(scalar)) {
+        diag_report(DIAG_ERROR, init->loc, "array initializer requires supported integer elements");
+        return;
+    }
+    size_t count = type->size / scalar->size;
+    ASTNode **items = arena_alloc_zero(s->arena, count * sizeof(ASTNode *));
+    flatten_array_init(s, type, init, items, 0, scalar->size);
+    ASTNode *zero = ast_new(s->arena, AST_LIT_INT, init->loc);
+    for (size_t i = 0; i < count; i++) {
+        if (!items[i]) items[i] = zero;
+    }
+    init->init_list.items = items;
+    init->init_list.count = (int)count;
 }
 
 static void analyze_expr(Sema *s, ASTNode *expr) {
@@ -2226,18 +2279,38 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
             }
             expr->cast.target_type = resolve_type(s, expr->cast.target_type);
             expr->type = expr->cast.target_type;
+            if (expr->type->kind == TYPE_PTR && expr->cast.expr && expr->cast.expr->kind == AST_CALL &&
+                expr->cast.expr->call.name && !strcmp(expr->cast.expr->call.name, "__winds_va_arg_gp")) {
+                Type *t = expr->type->ptr.base;
+                if (t->unsupported_float || (!type_is_integer(t) && t->kind != TYPE_PTR) || t->size > 8)
+                    diag_report(DIAG_ERROR, expr->loc, "va_arg currently supports integer and pointer types only");
+            }
             break;
         }
 
         default:
             break;
     }
+    if (expr->type && expr->type->unsupported_float)
+        diag_report(DIAG_ERROR, expr->loc, "floating-point expressions are not supported by the native backend");
 }
 
 static void analyze_stmt(Sema *s, ASTNode *stmt) {
     if (!stmt) return;
 
     switch (stmt->kind) {
+        case AST_DECL_ENUM:
+            for (int i = 0; i < stmt->enum_decl.count; i++) {
+                Symbol *item = arena_alloc_zero(s->arena, sizeof(Symbol));
+                item->kind = SYM_VAR;
+                item->name = stmt->enum_decl.item_names[i];
+                item->type = g_type_int;
+                item->is_const_value = true;
+                item->const_value = stmt->enum_decl.item_values[i];
+                add_symbol(s->current_scope, item);
+            }
+            break;
+
         case AST_STMT_EXPR:
             if (stmt->stmt_expr.expr && stmt->stmt_expr.expr->kind == AST_VAR_REF &&
                 stmt->stmt_expr.expr->var_ref.scope_prefix &&
@@ -2274,6 +2347,8 @@ static void analyze_stmt(Sema *s, ASTNode *stmt) {
                 vt->array.count = (size_t)stmt->var_decl.init->init_list.count;
                 vt->size = vt->array.base->size * vt->array.count;
             }
+
+            normalize_array_init(s, vt, stmt->var_decl.init);
 
             /* Check if class variable needs default constructor invocation */
             if (stmt->var_decl.init == NULL && vt && vt->kind == TYPE_CLASS && vt->name) {
@@ -2413,6 +2488,8 @@ static void analyze_function(Sema *s, ASTNode *fn) {
     for (int i = 0; i < fn->func_decl.param_count; i++) {
         ASTNode *pnode = fn->func_decl.params[i];
         pnode->var_decl.var_type = resolve_type(s, pnode->var_decl.var_type);
+        if (pnode->var_decl.var_type->kind == TYPE_ARRAY)
+            pnode->var_decl.var_type = type_ptr(s->arena, pnode->var_decl.var_type->array.base);
         TypeParam *tp = arena_alloc_zero(s->arena, sizeof(TypeParam));
         tp->name = pnode->var_decl.name;
         tp->type = pnode->var_decl.var_type;
@@ -2537,6 +2614,7 @@ static void sema_register_classes(Sema *s, ASTNode *decl, const char *ns_prefix)
 
         for (int m = 0; m < decl->class_decl.method_count; m++) {
             ASTNode *mdecl = decl->class_decl.methods[m];
+            if (mdecl->kind == AST_DECL_CLASS) sema_register_classes(s, mdecl, ns_prefix);
             if (mdecl->kind == AST_DECL_TYPEDEF) {
                 Type *resolved = resolve_type(s, mdecl->typedef_decl.aliased_type);
                 Symbol *tsym = arena_alloc_zero(s->arena, sizeof(Symbol));
@@ -2562,6 +2640,7 @@ static void sema_register_classes(Sema *s, ASTNode *decl, const char *ns_prefix)
         cls->name = full_name;
         cls->cls.class_name = full_name;
         cls->cls.fields = decl->class_decl.fields;
+        cls->cls.is_union = decl->class_decl.is_union;
         layout_class(s, cls);
         decl->class_decl.class_type = cls;
 
@@ -2728,6 +2807,7 @@ static void sema_analyze_decls(Sema *s, ASTNode *decl, const char *ns_prefix) {
             decl->var_decl.var_type->size = decl->var_decl.var_type->array.base->size *
                                            decl->var_decl.var_type->array.count;
         }
+        normalize_array_init(s, decl->var_decl.var_type, decl->var_decl.init);
         const char *full_name = decl->var_decl.name;
         if (ns_prefix && strstr(decl->var_decl.name, "::") == NULL) {
             char buf[256];

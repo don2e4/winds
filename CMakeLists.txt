@@ -99,4 +99,9 @@ if(BUILD_TESTING)
         COMMAND ${BASH_EXECUTABLE} -c "$<TARGET_FILE:winds> tests/21_c_compat.c -o ${CMAKE_CURRENT_BINARY_DIR}/21_c_compat.out && ${CMAKE_CURRENT_BINARY_DIR}/21_c_compat.out"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
+    add_test(
+        NAME test_updates
+        COMMAND ${CMAKE_COMMAND} -E env WINDS=$<TARGET_FILE:winds> ${BASH_EXECUTABLE} tests/updates.sh
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
 endif()

@@ -1870,6 +1870,9 @@ static Token scan_identifier_or_keyword(Lexer *l, SourceLoc loc) {
 
     /* Check keywords */
     if (strcmp(name, "class") == 0) tok.kind = TOK_KW_CLASS;
+    else if (strcmp(name, "union") == 0) tok.kind = TOK_KW_UNION;
+    else if (strcmp(name, "register") == 0) tok.kind = TOK_KW_REGISTER;
+    else if (strcmp(name, "auto") == 0) tok.kind = TOK_KW_AUTO;
     else if (strcmp(name, "struct") == 0) tok.kind = TOK_KW_STRUCT;
     else if (strcmp(name, "enum") == 0) tok.kind = TOK_KW_ENUM;
     else if (strcmp(name, "public") == 0) tok.kind = TOK_KW_PUBLIC;
@@ -1904,7 +1907,7 @@ static Token scan_identifier_or_keyword(Lexer *l, SourceLoc loc) {
     else if (strcmp(name, "__volatile__") == 0 || strcmp(name, "__volatile") == 0 || strcmp(name, "volatile") == 0) tok.kind = TOK_KW_VOLATILE;
     else if (strcmp(name, "__typeof__") == 0 || strcmp(name, "__typeof") == 0 || strcmp(name, "typeof") == 0) tok.kind = TOK_KW_TYPEOF;
     else if (strcmp(name, "void") == 0) tok.kind = TOK_KW_VOID;
-    else if (strcmp(name, "bool") == 0) tok.kind = TOK_KW_BOOL;
+    else if ((strcmp(name, "bool") == 0 || strcmp(name, "_Bool") == 0)) tok.kind = TOK_KW_BOOL;
     else if (strcmp(name, "char") == 0) tok.kind = TOK_KW_CHAR;
     else if (strcmp(name, "short") == 0) tok.kind = TOK_KW_SHORT;
     else if (strcmp(name, "int") == 0) tok.kind = TOK_KW_INT;
@@ -2154,6 +2157,9 @@ const char *token_kind_str(TokenKind kind) {
         case TOK_STR_LIT: return "string literal";
         case TOK_KW_CLASS: return "class";
         case TOK_KW_STRUCT: return "struct";
+        case TOK_KW_UNION: return "union";
+        case TOK_KW_REGISTER: return "register";
+        case TOK_KW_AUTO: return "auto";
         case TOK_KW_ENUM: return "enum";
         case TOK_KW_PUBLIC: return "public";
         case TOK_KW_PRIVATE: return "private";
