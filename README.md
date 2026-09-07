@@ -49,7 +49,7 @@ benchmarks measured on x86_64 linux across 20 iterations:
 | metric | clang++ (llvm 22.1) | winds | advantage |
 |---|:---|:---|:---|
 | **frontend + codegen (`-s`)** | `11.89 ms` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `0.53 ms` &nbsp; ▰ | **~22.3x faster** |
-| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `255 kb` &nbsp; ▰ | **~788x lighter** |
+| **compiler footprint** | `~196 mb` &nbsp; ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ | `267 kb` &nbsp; ▰ | **~751x lighter** |
 | **runtime dependencies** | libllvm, libclang-cpp, libc++ | glibc only | **100% self-contained** |
 | **memory teardown** | recursive reference counting | contiguous bump arena | **instant constant-time exit** |
 
