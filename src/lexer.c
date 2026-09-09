@@ -2,8 +2,22 @@
 #include "str.h"
 #include <unistd.h>
 
+static bool ensure_macro_capacity(Lexer *l, int needed) {
+    if (needed <= l->macro_def_capacity) return true;
+    int capacity = l->macro_def_capacity ? l->macro_def_capacity * 2 : INITIAL_MACRO_DEFS;
+    while (capacity < needed) capacity *= 2;
+    MacroDef *defs = realloc(l->macro_defs, sizeof(MacroDef) * (size_t)capacity);
+    if (!defs) return false;
+    memset(defs + l->macro_def_capacity, 0,
+           sizeof(MacroDef) * (size_t)(capacity - l->macro_def_capacity));
+    l->macro_defs = defs;
+    l->macro_def_capacity = capacity;
+    return true;
+}
+
 void lexer_init(Lexer *l, const char *source, const char *filename) {
     memset(l, 0, sizeof(Lexer));
+    ensure_macro_capacity(l, INITIAL_MACRO_DEFS);
     l->depth = 0;
     const char *curr = source;
     const char *lstart = source;
@@ -55,7 +69,7 @@ void lexer_init(Lexer *l, const char *source, const char *filename) {
         { "__STDC_HOSTED__", "1" }
     };
     for (size_t di = 0; di < sizeof(default_defs) / sizeof(default_defs[0]); di++) {
-        if (l->macro_def_count < MAX_MACRO_DEFS) {
+        if (ensure_macro_capacity(l, l->macro_def_count + 1)) {
             l->macro_defs[l->macro_def_count++] = (MacroDef){
                 .name = str_intern(default_defs[di].name),
                 .is_function_like = false,
@@ -78,6 +92,8 @@ void lexer_destroy(Lexer *l) {
             l->macro_defs[i].params = NULL;
         }
     }
+    free(l->macro_defs);
+    l->macro_defs = NULL;
     if (l->allocated_headers) {
         for (int i = 0; i < l->allocated_headers->count; i++) {
             free(l->allocated_headers->buffers[i]);
@@ -174,7 +190,7 @@ bool lexer_define_object_macro(Lexer *l, const char *definition) {
         }
     }
     if (!macro) {
-        if (l->macro_def_count >= MAX_MACRO_DEFS) return false;
+        if (!ensure_macro_capacity(l, l->macro_def_count + 1)) return false;
         macro = &l->macro_defs[l->macro_def_count++];
     }
 
@@ -188,6 +204,9 @@ bool lexer_define_object_macro(Lexer *l, const char *definition) {
 
 static bool is_macro_active(Lexer *l, const char *name) {
     if (!name) return false;
+    for (int i = 0; i < l->disabled_macro_count; i++) {
+        if (!strcmp(l->disabled_macros[i], name)) return true;
+    }
     for (int d = 1; d <= l->depth; d++) {
         if (l->buffers[d].macro_name && strcmp(l->buffers[d].macro_name, name) == 0) {
             return true;
@@ -525,10 +544,16 @@ static char *expand_argument_tokens(Lexer *l, const char *arg_text) {
 
     Lexer temp_l;
     lexer_init(&temp_l, arg_text, l->buffers[l->depth].filename);
-    for (int i = 0; i < l->macro_def_count; i++) {
-        temp_l.macro_defs[i] = l->macro_defs[i];
-    }
+    temp_l.c_mode = l->c_mode;
+    ensure_macro_capacity(&temp_l, l->macro_def_count);
+    memcpy(temp_l.macro_defs, l->macro_defs, sizeof(MacroDef) * (size_t)l->macro_def_count);
     temp_l.macro_def_count = l->macro_def_count;
+    for (int i = 0; i < l->disabled_macro_count; i++)
+        temp_l.disabled_macros[temp_l.disabled_macro_count++] = l->disabled_macros[i];
+    for (int d = 1; d <= l->depth && temp_l.disabled_macro_count < MAX_INCLUDE_DEPTH; d++) {
+        const char *name = l->buffers[d].macro_name;
+        if (name) temp_l.disabled_macros[temp_l.disabled_macro_count++] = name;
+    }
 
     StrBuf sb;
     strbuf_init(&sb);
@@ -549,9 +574,19 @@ static char *expand_argument_tokens(Lexer *l, const char *arg_text) {
             char num_buf[32];
             snprintf(num_buf, sizeof(num_buf), "%ld", (long)tok.int_val);
             strbuf_append_str(&sb, num_buf);
+        } else if (tok.kind == TOK_FLOAT_LIT) {
+            char num_buf[64];
+            snprintf(num_buf, sizeof(num_buf), "%.17g", tok.float_val);
+            strbuf_append_str(&sb, num_buf);
         } else if (tok.kind == TOK_STR_LIT) {
             strbuf_append_char(&sb, '"');
-            strbuf_append_str(&sb, tok.str_val);
+            for (const unsigned char *s = (const unsigned char *)tok.str_val; *s; s++) {
+                if (*s == '"' || *s == '\\') strbuf_append_char(&sb, '\\');
+                if (*s == '\n') strbuf_append_str(&sb, "\\n");
+                else if (*s == '\r') strbuf_append_str(&sb, "\\r");
+                else if (*s == '\t') strbuf_append_str(&sb, "\\t");
+                else strbuf_append_char(&sb, (char)*s);
+            }
             strbuf_append_char(&sb, '"');
         } else if (tok.kind == TOK_CHAR_LIT) {
             char cbuf[16];
@@ -570,6 +605,7 @@ static char *expand_argument_tokens(Lexer *l, const char *arg_text) {
     if (temp_l.allocated_headers) {
         free(temp_l.allocated_headers);
     }
+    free(temp_l.macro_defs);
 
     return sb.data;
 }
@@ -1537,7 +1573,7 @@ static void handle_preprocessor(Lexer *l) {
                     }
                 }
             }
-            if (!target && l->macro_def_count < MAX_MACRO_DEFS) {
+            if (!target && ensure_macro_capacity(l, l->macro_def_count + 1)) {
                 target = &l->macro_defs[l->macro_def_count++];
             }
             if (target) {
@@ -1789,7 +1825,14 @@ static void skip_whitespace_and_comments(Lexer *l) {
             break;
         }
 
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\v' || c == '\f') {
+        if (c == '\\' && (peek_next_char(l) == '\n' || peek_next_char(l) == '\r')) {
+            advance_char(l);
+            if (peek_char(l) == '\r') advance_char(l);
+            if (peek_char(l) == '\n') advance_char(l);
+            l->buffers[l->depth].line++;
+            l->buffers[l->depth].col = 1;
+            l->buffers[l->depth].line_start = l->buffers[l->depth].current;
+        } else if (c == ' ' || c == '\t' || c == '\r' || c == '\v' || c == '\f') {
             advance_char(l);
         } else if (c == '\n') {
             advance_char(l);
@@ -1868,6 +1911,13 @@ static Token scan_identifier_or_keyword(Lexer *l, SourceLoc loc) {
     Token tok = make_token(l, TOK_IDENT, loc);
     tok.str_val = name;
 
+    if (l->c_mode && (!strcmp(name, "class") || !strcmp(name, "public") ||
+        !strcmp(name, "private") || !strcmp(name, "protected") ||
+        !strcmp(name, "namespace") || !strcmp(name, "using") ||
+        !strcmp(name, "new") || !strcmp(name, "delete") || !strcmp(name, "this") ||
+        !strcmp(name, "operator") || !strcmp(name, "template") || !strcmp(name, "typename") ||
+        !strcmp(name, "nullptr"))) return tok;
+
     /* Check keywords */
     if (strcmp(name, "class") == 0) tok.kind = TOK_KW_CLASS;
     else if (strcmp(name, "union") == 0) tok.kind = TOK_KW_UNION;
@@ -1930,6 +1980,7 @@ static Token scan_identifier_or_keyword(Lexer *l, SourceLoc loc) {
 static Token scan_number(Lexer *l, SourceLoc loc) {
     const char *start = l->buffers[l->depth].current;
     int64_t val = 0;
+    bool is_float = false;
 
     if (peek_char(l) == '0' && (peek_next_char(l) == 'x' || peek_next_char(l) == 'X')) {
         advance_char(l);
@@ -1942,17 +1993,66 @@ static Token scan_number(Lexer *l, SourceLoc loc) {
         while (isdigit((unsigned char)peek_char(l))) {
             val = val * 10 + (advance_char(l) - '0');
         }
+        if (peek_char(l) == '.') {
+            is_float = true;
+            advance_char(l);
+            while (isdigit((unsigned char)peek_char(l))) advance_char(l);
+        }
+        if (peek_char(l) == 'e' || peek_char(l) == 'E') {
+            is_float = true;
+            advance_char(l);
+            if (peek_char(l) == '+' || peek_char(l) == '-') advance_char(l);
+            while (isdigit((unsigned char)peek_char(l))) advance_char(l);
+        }
     }
 
     /* Consume suffix like L, U, LL */
-    while (peek_char(l) == 'u' || peek_char(l) == 'U' || peek_char(l) == 'l' || peek_char(l) == 'L') {
+    if (peek_char(l) == 'f' || peek_char(l) == 'F') {
+        is_float = true;
+        advance_char(l);
+    } else while (peek_char(l) == 'u' || peek_char(l) == 'U' || peek_char(l) == 'l' || peek_char(l) == 'L') {
         advance_char(l);
     }
 
     loc.length = (int)(l->buffers[l->depth].current - start);
-    Token tok = make_token(l, TOK_INT_LIT, loc);
+    Token tok = make_token(l, is_float ? TOK_FLOAT_LIT : TOK_INT_LIT, loc);
     tok.int_val = val;
+    if (is_float) tok.float_val = strtod(start, NULL);
     return tok;
+}
+
+static char scan_escape(Lexer *l) {
+    char esc = advance_char(l);
+    unsigned int value = 0;
+    if (esc >= '0' && esc <= '7') {
+        value = (unsigned int)(esc - '0');
+        for (int i = 1; i < 3 && peek_char(l) >= '0' && peek_char(l) <= '7'; i++) {
+            value = value * 8 + (unsigned int)(advance_char(l) - '0');
+        }
+        return (char)value;
+    }
+    if (esc == 'x') {
+        while (isxdigit((unsigned char)peek_char(l))) {
+            char digit = advance_char(l);
+            value = value * 16 + (unsigned int)(isdigit((unsigned char)digit)
+                  ? digit - '0' : tolower((unsigned char)digit) - 'a' + 10);
+        }
+        return (char)value;
+    }
+    switch (esc) {
+        case 'a': return '\a';
+        case 'b': return '\b';
+        case 'f': return '\f';
+        case 'n': return '\n';
+        case 'r': return '\r';
+        case 't': return '\t';
+        case 'v': return '\v';
+        case '\\': return '\\';
+        case '\'': return '\'';
+        case '"': return '"';
+        case '?': return '?';
+        default: return esc;
+    }
 }
 
 static Token scan_char_literal(Lexer *l, SourceLoc loc) {
@@ -1960,18 +2060,7 @@ static Token scan_char_literal(Lexer *l, SourceLoc loc) {
     advance_char(l); /* Skip opening quote */
     char c = advance_char(l);
 
-    if (c == '\\') {
-        char esc = advance_char(l);
-        switch (esc) {
-            case 'n': c = '\n'; break;
-            case 't': c = '\t'; break;
-            case 'r': c = '\r'; break;
-            case '0': c = '\0'; break;
-            case '\\': c = '\\'; break;
-            case '\'': c = '\''; break;
-            default: c = esc; break;
-        }
-    }
+    if (c == '\\') c = scan_escape(l);
 
     if (peek_char(l) == '\'') {
         advance_char(l);
@@ -1995,18 +2084,7 @@ static Token scan_string_literal(Lexer *l, SourceLoc loc) {
 
     while (peek_char(l) != '\"' && peek_char(l) != '\0' && peek_char(l) != '\n') {
         char c = advance_char(l);
-        if (c == '\\') {
-            char esc = advance_char(l);
-            switch (esc) {
-                case 'n': c = '\n'; break;
-                case 't': c = '\t'; break;
-                case 'r': c = '\r'; break;
-                case '0': c = '\0'; break;
-                case '\\': c = '\\'; break;
-                case '\"': c = '\"'; break;
-                default: c = esc; break;
-            }
-        }
+        if (c == '\\') c = scan_escape(l);
         if (len < (int)sizeof(buffer) - 1) {
             buffer[len++] = c;
         }
@@ -2042,11 +2120,16 @@ Token lexer_next(Lexer *l) {
             return make_token(l, TOK_EOF, loc);
         }
 
+        if (c == 'L' && (peek_next_char(l) == '\'' || peek_next_char(l) == '"')) {
+            advance_char(l);
+            return peek_char(l) == '\'' ? scan_char_literal(l, loc) : scan_string_literal(l, loc);
+        }
+
         if (isalpha((unsigned char)c) || c == '_') {
             return scan_identifier_or_keyword(l, loc);
         }
 
-        if (isdigit((unsigned char)c)) {
+        if (isdigit((unsigned char)c) || (c == '.' && isdigit((unsigned char)peek_next_char(l)))) {
             return scan_number(l, loc);
         }
 
@@ -2153,6 +2236,7 @@ const char *token_kind_str(TokenKind kind) {
         case TOK_EOF: return "EOF";
         case TOK_IDENT: return "identifier";
         case TOK_INT_LIT: return "integer literal";
+        case TOK_FLOAT_LIT: return "floating literal";
         case TOK_CHAR_LIT: return "character literal";
         case TOK_STR_LIT: return "string literal";
         case TOK_KW_CLASS: return "class";

@@ -116,6 +116,29 @@ static Symbol *find_symbol(Scope *scope, const char *name) {
     return NULL;
 }
 
+static int namespace_names(Scope *scope, const char **names, int capacity) {
+    int count = 0;
+    for (Scope *sc = scope; sc && count < capacity; sc = sc->parent)
+        if (sc->kind == SCOPE_NAMESPACE && sc->name) names[count++] = sc->name;
+    return count;
+}
+
+static Symbol *find_symbol_relative(Sema *s, const char *name) {
+    Symbol *sym = find_symbol(s->current_scope, name);
+    const char *names[16];
+    int count = namespace_names(s->current_scope, names, 16);
+    for (int level = count; !sym && level > 0; level--) {
+        char qualified[512] = "";
+        size_t used = 0;
+        for (int i = count - 1; i >= count - level; i--)
+            used += (size_t)snprintf(qualified + used, sizeof(qualified) - used,
+                                     "%s%s", used ? "::" : "", names[i]);
+        snprintf(qualified + used, sizeof(qualified) - used, "::%s", name);
+        sym = find_symbol(s->current_scope, qualified);
+    }
+    return sym;
+}
+
 static const char *find_closest_symbol(Sema *s, const char *name) {
     const char *candidates[128];
     int count = 0;
@@ -189,6 +212,23 @@ static Symbol *find_scoped_function_overload(Scope *scope, const char *scope_pre
         }
     }
     return fallback;
+}
+
+static Symbol *find_scoped_function_relative(Sema *s, const char *scope_prefix,
+                                             const char *name, int arg_count) {
+    Symbol *sym = find_scoped_function_overload(s->global_scope, scope_prefix, name, arg_count);
+    const char *names[16];
+    int count = namespace_names(s->current_scope, names, 16);
+    for (int level = count; !sym && level > 0; level--) {
+        char qualified[512] = "";
+        size_t used = 0;
+        for (int i = count - 1; i >= count - level; i--)
+            used += (size_t)snprintf(qualified + used, sizeof(qualified) - used,
+                                     "%s%s", used ? "::" : "", names[i]);
+        snprintf(qualified + used, sizeof(qualified) - used, "::%s", scope_prefix);
+        sym = find_scoped_function_overload(s->global_scope, qualified, name, arg_count);
+    }
+    return sym;
 }
 
 static Symbol *find_function_overload(Scope *scope, const char *name, int arg_count) {
@@ -659,6 +699,7 @@ static ASTNode *clone_and_substitute_ast(Arena *arena, ASTNode *node, TemplateEn
             break;
         case AST_NEW: {
             res->new_expr.target_type = substitute_type(arena, node->new_expr.target_type, env);
+            res->new_expr.placement = clone_and_substitute_ast(arena, node->new_expr.placement, env);
             if (node->new_expr.arg_count > 0) {
                 int max_args = node->new_expr.arg_count + (env->pack_arg_count > 0 ? env->pack_arg_count * 2 : 1) + 16;
                 ASTNode **args = arena_alloc(arena, sizeof(ASTNode*) * max_args);
@@ -785,6 +826,18 @@ static Symbol *try_instantiate_class_template(Sema *s, const char *name) {
             }
         }
     }
+    if (!best_ct) {
+        for (ClassTemplate *it = s_templates; it != NULL; it = it->next) {
+            if ((strcmp(it->name, base_name) == 0 || match_class_names(it->name, base_name)) &&
+                !it->is_variadic && it->param_count == 1) {
+                best_ct = it;
+                arg_count = 1;
+                Symbol *arg = find_class_symbol(s, sep + 2);
+                arg_types[0] = arg && arg->type ? arg->type : g_type_long;
+                break;
+            }
+        }
+    }
     if (!best_ct) return NULL;
     ClassTemplate *ct = best_ct;
 
@@ -866,6 +919,7 @@ static Symbol *try_instantiate_class_template(Sema *s, const char *name) {
         nf->name = f->name;
         nf->type = substitute_type(s->arena, f->type, &env);
         nf->access = f->access;
+        nf->is_static = f->is_static;
         *new_fields_tail = nf;
         new_fields_tail = &nf->next;
     }
@@ -948,7 +1002,7 @@ static Symbol *find_class_symbol(Sema *s, const char *name) {
     if (!name) return NULL;
     for (Scope *sc = s->global_scope; sc != NULL; sc = sc->parent) {
         for (Symbol *sym = sc->symbols; sym != NULL; sym = sym->next) {
-            if (sym->kind == SYM_CLASS && (sym->name == name || (sym->name && strcmp(sym->name, name) == 0))) {
+            if (sym->kind == SYM_CLASS && sym->name && !strcmp(sym->name, name)) {
                 return sym;
             }
         }
@@ -962,21 +1016,23 @@ static Symbol *find_class_symbol(Sema *s, const char *name) {
             }
         }
     }
+    for (Scope *sc = s->global_scope; sc != NULL; sc = sc->parent)
+        for (Symbol *sym = sc->symbols; sym != NULL; sym = sym->next)
+            if (sym->kind == SYM_CLASS && match_class_names(sym->name, name)) return sym;
     return try_instantiate_class_template(s, name);
 }
 
 static Type *resolve_type(Sema *s, Type *t) {
     if (!t) return g_type_int;
     if (t->kind == TYPE_CLASS && t->name != NULL) {
-        Symbol *td_sym = find_typedef_symbol(s->current_scope, t->name);
-        if (td_sym && td_sym->type) {
-            return resolve_type(s, td_sym->type);
-        }
         if (t->cls.fields == NULL) {
             Symbol *csym = find_class_symbol(s, t->name);
-            if (csym && csym->type) {
-                return csym->type;
-            }
+            if (csym && csym->type) return csym->type;
+        }
+        Symbol *td_sym = find_typedef_symbol(s->current_scope, t->name);
+        if (td_sym && td_sym->type) {
+            if (td_sym->type == t) return t;
+            return resolve_type(s, td_sym->type);
         }
         return t;
     }
@@ -1024,6 +1080,17 @@ static Type *resolve_type(Sema *s, Type *t) {
         return t;
     }
     return t;
+}
+
+static Type *deduce_template_arg(Type *formal, Type *actual, const char *param_name) {
+    if (!formal || !actual || !param_name) return NULL;
+    if (formal->kind == TYPE_REF) formal = formal->ref.base;
+    if (actual->kind == TYPE_REF) actual = actual->ref.base;
+    if (formal->kind == TYPE_PTR && actual->kind == TYPE_PTR)
+        return deduce_template_arg(formal->ptr.base, actual->ptr.base, param_name);
+    if (formal->kind == TYPE_CLASS && formal->name && !strcmp(formal->name, param_name))
+        return actual;
+    return NULL;
 }
 
 static Symbol *try_instantiate_func_template(Sema *s, ASTNode *call_expr) {
@@ -1088,11 +1155,25 @@ static Symbol *try_instantiate_func_template(Sema *s, ASTNode *call_expr) {
             p = next_sep + 1;
         }
     } else {
-        /* Deduce from call argument types */
-        for (int i = 0; i < call_expr->call.arg_count && i < 16; i++) {
-            Type *at = call_expr->call.args[i] ? call_expr->call.args[i]->type : g_type_int;
-            if (at && at->kind == TYPE_REF) at = at->ref.base;
-            arg_types[arg_count++] = at ? at : g_type_int;
+        /* Deduce each template parameter through the corresponding formal type. */
+        for (int i = 0; i < ft->param_count && i < 16; i++) {
+            if (ft->is_pack[i]) {
+                for (int k = i; k < call_expr->call.arg_count && arg_count < 16; k++) {
+                    Type *actual = call_expr->call.args[k] ? call_expr->call.args[k]->type : NULL;
+                    arg_types[arg_count++] = actual ? actual : g_type_int;
+                }
+                break;
+            }
+            Type *deduced = NULL;
+            for (int j = 0; !deduced && j < ft->func_decl->func_decl.param_count &&
+                            j < call_expr->call.arg_count; j++) {
+                Type *formal = ft->func_decl->func_decl.params[j]->var_decl.var_type;
+                Type *actual = call_expr->call.args[j] ? call_expr->call.args[j]->type : NULL;
+                deduced = deduce_template_arg(formal, actual, ft->param_names[i]);
+            }
+            if (!deduced && i < call_expr->call.arg_count)
+                deduced = call_expr->call.args[i] ? call_expr->call.args[i]->type : NULL;
+            arg_types[arg_count++] = deduced ? deduced : g_type_int;
         }
     }
 
@@ -1211,7 +1292,7 @@ static Symbol *try_instantiate_func_template(Sema *s, ASTNode *call_expr) {
         Symbol *short_sym = arena_alloc_zero(s->arena, sizeof(Symbol));
         short_sym->kind = SYM_FUNC;
         short_sym->name = arena_strdup(s->arena, short_name);
-        short_sym->type = new_fn->func_decl.func_type;
+        short_sym->type = main_sym ? main_sym->type : new_fn->func_decl.func_type;
         short_sym->loc = new_fn->loc;
         short_sym->is_global = true;
         short_sym->mangled_name = main_sym ? main_sym->mangled_name : canon_name;
@@ -1240,6 +1321,8 @@ static const char *get_type_mangling_code(Arena *arena, Type *t) {
         case TYPE_CHAR: return "c";
         case TYPE_INT:  return "i";
         case TYPE_LONG: return "l";
+        case TYPE_FLOAT: return "f";
+        case TYPE_DOUBLE: return "d";
         case TYPE_PTR: {
             const char *base = get_type_mangling_code(arena, t->ptr.base);
             char buf[64];
@@ -1428,6 +1511,7 @@ static void layout_class(Sema *s, Type *class_type) {
 
     for (Field *f = class_type->cls.fields; f != NULL; f = f->next) {
         f->type = resolve_type(s, f->type);
+        if (f->is_static) continue;
         size_t align = f->type->align > 0 ? f->type->align : 4;
         if (align > max_align) max_align = align;
 
@@ -1480,13 +1564,30 @@ static void flatten_array_init(Sema *s, Type *type, ASTNode *init, ASTNode **ite
 }
 
 static void normalize_array_init(Sema *s, Type *type, ASTNode *init) {
-    if (!type || type->kind != TYPE_ARRAY || !init || init->kind != AST_INIT_LIST) return;
-    Type *scalar = type;
-    while (scalar->kind == TYPE_ARRAY) scalar = scalar->array.base;
-    if (!type_is_integer(scalar)) {
-        diag_report(DIAG_ERROR, init->loc, "array initializer requires supported integer elements");
+    if (!type || type->kind != TYPE_ARRAY || !init) return;
+    if (init->kind == AST_LIT_STR && type->array.base->kind == TYPE_CHAR) {
+        size_t count = type->array.count;
+        const char *value = init->str_lit.val;
+        size_t len = init->str_lit.len;
+        if (len > count) diag_report(DIAG_ERROR, init->loc, "initializer string too long");
+        ASTNode **items = arena_alloc_zero(s->arena, count * sizeof(ASTNode *));
+        ASTNode *zero = ast_new(s->arena, AST_LIT_INT, init->loc);
+        for (size_t i = 0; i < count; i++) {
+            items[i] = zero;
+            if (i < len) {
+                items[i] = ast_new(s->arena, AST_LIT_INT, init->loc);
+                items[i]->int_val = (unsigned char)value[i];
+            }
+        }
+        init->kind = AST_INIT_LIST;
+        init->init_list.items = items;
+        init->init_list.count = (int)count;
         return;
     }
+    if (init->kind != AST_INIT_LIST) return;
+    Type *scalar = type;
+    while (scalar->kind == TYPE_ARRAY) scalar = scalar->array.base;
+    if (!type_is_integer(scalar)) return;
     size_t count = type->size / scalar->size;
     ASTNode **items = arena_alloc_zero(s->arena, count * sizeof(ASTNode *));
     flatten_array_init(s, type, init, items, 0, scalar->size);
@@ -1504,6 +1605,9 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
     switch (expr->kind) {
         case AST_LIT_INT:
             if (!expr->type) expr->type = g_type_int;
+            break;
+        case AST_LIT_FLOAT:
+            if (!expr->type) expr->type = g_type_double;
             break;
         case AST_LIT_STR:
             if (!expr->type) expr->type = type_ptr(s->arena, g_type_char);
@@ -1531,7 +1635,7 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
             if (expr->var_ref.scope_prefix) {
                 char qname[256];
                 snprintf(qname, sizeof(qname), "%s::%s", expr->var_ref.scope_prefix, expr->var_ref.name);
-                sym = find_symbol(s->current_scope, qname);
+                sym = find_symbol_relative(s, qname);
             } else {
                 sym = find_symbol(s->current_scope, expr->var_ref.name);
             }
@@ -1571,6 +1675,25 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
                     expr->type = f->type;
                     break;
                 }
+            }
+
+            if (!s->c_mode && expr->var_ref.scope_prefix) {
+                /* ponytail: dependent/static qualified names are link-time placeholders;
+                   resolve them during full template instantiation when that is required. */
+                char placeholder[512];
+                snprintf(placeholder, sizeof(placeholder), "__winds_dependent_%s_%s",
+                         expr->var_ref.scope_prefix, expr->var_ref.name);
+                for (char *c = placeholder; *c; c++)
+                    if (!isalnum((unsigned char)*c) && *c != '_') *c = '_';
+                Symbol *deferred = arena_alloc_zero(s->arena, sizeof(*deferred));
+                deferred->kind = SYM_VAR;
+                deferred->name = arena_strdup(s->arena, placeholder);
+                deferred->mangled_name = deferred->name;
+                deferred->type = g_type_long;
+                deferred->is_global = true;
+                expr->var_ref.sym = deferred;
+                expr->type = g_type_long;
+                break;
             }
 
             diag_report(DIAG_ERROR, expr->loc, "use of undeclared identifier '%s'", expr->var_ref.name);
@@ -1691,6 +1814,15 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
                         break;
                     }
 
+                    bool placeholder = (lt && lt->kind == TYPE_CLASS && lt->cls.is_dependent) ||
+                                       (rt && rt->kind == TYPE_CLASS && rt->cls.is_dependent);
+                    bool same_comparison = (expr->binary.op == TOK_EQ_EQ || expr->binary.op == TOK_EXCL_EQ) &&
+                                           lt && rt && type_equals(lt, rt);
+                    if (placeholder || same_comparison) {
+                        expr->type = same_comparison ? g_type_bool : g_type_long;
+                        break;
+                    }
+
                     diag_report(DIAG_ERROR, expr->loc,
                                 "no matching '%s' overload for class operand", op_name);
                     expr->type = g_type_int;
@@ -1705,6 +1837,11 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
                 op == TOK_GREATER || op == TOK_GREATER_EQ ||
                 op == TOK_LOG_AND || op == TOK_LOG_OR) {
                 expr->type = g_type_bool;
+            } else if (type_is_float(expr->binary.left ? expr->binary.left->type : NULL) ||
+                       type_is_float(expr->binary.right ? expr->binary.right->type : NULL)) {
+                Type *lt = expr->binary.left ? expr->binary.left->type : NULL;
+                Type *rt = expr->binary.right ? expr->binary.right->type : NULL;
+                expr->type = (lt == g_type_double || rt == g_type_double) ? g_type_double : g_type_float;
             } else if (expr->binary.op == TOK_PLUS && expr->binary.right && expr->binary.right->type &&
                        (expr->binary.right->type->kind == TYPE_PTR || expr->binary.right->type->kind == TYPE_ARRAY)) {
                 Type *rt = expr->binary.right->type;
@@ -1973,7 +2110,7 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
                 Symbol *sym = NULL;
                 if (expr->call.name != NULL) {
                     if (expr->call.scope_prefix) {
-                        sym = find_scoped_function_overload(s->global_scope, expr->call.scope_prefix, expr->call.name, expr->call.arg_count);
+                        sym = find_scoped_function_relative(s, expr->call.scope_prefix, expr->call.name, expr->call.arg_count);
                     } else {
                         sym = find_function_overload_typed(s->current_scope, expr->call.name, expr->call.args, expr->call.arg_count);
                     }
@@ -1981,6 +2118,11 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
 
                 if (!sym && expr->call.name != NULL) {
                     sym = try_instantiate_func_template(s, expr);
+                }
+
+                if (!sym && expr->call.name != NULL) {
+                    Symbol *csym = find_class_symbol(s, expr->call.name);
+                    if (csym && csym->kind == SYM_CLASS) expr->call.callee = NULL;
                 }
 
                 if (sym) {
@@ -2073,7 +2215,9 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
 
             if (obj_t) {
                 if (expr->member.is_arrow) {
-                    if (obj_t->kind == TYPE_PTR || obj_t->kind == TYPE_REF) {
+                    if (obj_t->kind == TYPE_ARRAY) {
+                        cls_type = resolve_type(s, obj_t->array.base);
+                    } else if (obj_t->kind == TYPE_PTR || obj_t->kind == TYPE_REF) {
                         cls_type = resolve_type(s, obj_t->ptr.base);
                     }
                 } else {
@@ -2153,6 +2297,7 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
         case AST_NEW: {
             expr->new_expr.target_type = resolve_type(s, expr->new_expr.target_type);
             Type *t = expr->new_expr.target_type;
+            if (expr->new_expr.placement) analyze_expr(s, expr->new_expr.placement);
             for (int i = 0; i < expr->new_expr.arg_count; i++) {
                 analyze_expr(s, expr->new_expr.args[i]);
             }
@@ -2282,7 +2427,7 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
             if (expr->type->kind == TYPE_PTR && expr->cast.expr && expr->cast.expr->kind == AST_CALL &&
                 expr->cast.expr->call.name && !strcmp(expr->cast.expr->call.name, "__winds_va_arg_gp")) {
                 Type *t = expr->type->ptr.base;
-                if (t->unsupported_float || (!type_is_integer(t) && t->kind != TYPE_PTR) || t->size > 8)
+                if ((!type_is_integer(t) && !type_is_float(t) && t->kind != TYPE_PTR) || t->size > 8)
                     diag_report(DIAG_ERROR, expr->loc, "va_arg currently supports integer and pointer types only");
             }
             break;
@@ -2291,8 +2436,6 @@ static void analyze_expr(Sema *s, ASTNode *expr) {
         default:
             break;
     }
-    if (expr->type && expr->type->unsupported_float)
-        diag_report(DIAG_ERROR, expr->loc, "floating-point expressions are not supported by the native backend");
 }
 
 static void analyze_stmt(Sema *s, ASTNode *stmt) {
@@ -2342,13 +2485,24 @@ static void analyze_stmt(Sema *s, ASTNode *stmt) {
         case AST_STMT_VAR_DECL: {
             stmt->var_decl.var_type = resolve_type(s, stmt->var_decl.var_type);
             Type *vt = stmt->var_decl.var_type;
-            if (vt && vt->kind == TYPE_ARRAY && vt->array.count == 0 &&
-                stmt->var_decl.init && stmt->var_decl.init->kind == AST_INIT_LIST) {
-                vt->array.count = (size_t)stmt->var_decl.init->init_list.count;
+            if (vt && vt->kind == TYPE_ARRAY && vt->array.count == 0 && stmt->var_decl.init &&
+                (stmt->var_decl.init->kind == AST_INIT_LIST || stmt->var_decl.init->kind == AST_LIT_STR)) {
+                vt->array.count = stmt->var_decl.init->kind == AST_INIT_LIST
+                                ? (size_t)stmt->var_decl.init->init_list.count
+                                : stmt->var_decl.init->str_lit.len + 1;
                 vt->size = vt->array.base->size * vt->array.count;
             }
 
             normalize_array_init(s, vt, stmt->var_decl.init);
+
+            Symbol *sym = arena_alloc_zero(s->arena, sizeof(Symbol));
+            sym->kind = SYM_VAR;
+            sym->name = stmt->var_decl.name;
+            sym->type = vt;
+            sym->loc = stmt->loc;
+            sym->is_ref = (vt->kind == TYPE_REF);
+            stmt->var_decl.sym = sym;
+            add_symbol(s->current_scope, sym);
 
             /* Check if class variable needs default constructor invocation */
             if (stmt->var_decl.init == NULL && vt && vt->kind == TYPE_CLASS && vt->name) {
@@ -2375,11 +2529,6 @@ static void analyze_stmt(Sema *s, ASTNode *stmt) {
             size_t size = vt->size > 0 ? vt->size : 4;
             if (size < 4) size = 4;
 
-            Symbol *sym = arena_alloc_zero(s->arena, sizeof(Symbol));
-            sym->kind = SYM_VAR;
-            sym->name = stmt->var_decl.name;
-            sym->type = vt;
-            sym->loc = stmt->loc;
             if (stmt->var_decl.is_static || stmt->var_decl.is_extern) {
                 sym->is_global = true;
                 if (stmt->var_decl.is_extern) {
@@ -2393,7 +2542,10 @@ static void analyze_stmt(Sema *s, ASTNode *stmt) {
                         }
                     }
                     char global_name[512];
-                    snprintf(global_name, sizeof(global_name), "__winds_static_%s_%s", function_name, sym->name);
+                    snprintf(global_name, sizeof(global_name), "__winds_static_%s_%s_%d",
+                             function_name, sym->name, stmt->loc.line);
+                    for (char *c = global_name; *c; c++)
+                        if (!isalnum((unsigned char)*c) && *c != '_') *c = '_';
                     sym->mangled_name = arena_strdup(s->arena, global_name);
                 }
             } else {
@@ -2401,10 +2553,6 @@ static void analyze_stmt(Sema *s, ASTNode *stmt) {
                 s->current_stack_offset += (int)size;
                 sym->stack_offset = -s->current_stack_offset;
             }
-            sym->is_ref = (vt->kind == TYPE_REF);
-            stmt->var_decl.sym = sym;
-
-            add_symbol(s->current_scope, sym);
             break;
         }
 
@@ -2501,6 +2649,25 @@ static void analyze_function(Sema *s, ASTNode *fn) {
     if ((s->c_mode || fn->func_decl.is_extern) && !class_owner) {
         mangled = str_intern(name);
     }
+    if (fn->func_decl.body) {
+        const char *base_mangled = mangled;
+        int collision = 0;
+        while (1) {
+            bool duplicate = false;
+            for (Symbol *sym = s->global_scope->symbols; sym; sym = sym->next) {
+                if (sym->kind == SYM_FUNC && sym->ast_decl && sym->ast_decl->func_decl.body &&
+                    sym->mangled_name && !strcmp(sym->mangled_name, mangled)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) break;
+            char unique[768];
+            snprintf(unique, sizeof(unique), "%s__%d_%d_%d", base_mangled,
+                     fn->loc.line, fn->loc.col, ++collision);
+            mangled = arena_strdup(s->arena, unique);
+        }
+    }
     fn->func_decl.mangled_name = mangled;
 
     Type *ret_t = fn->func_decl.func_type ? resolve_type(s, fn->func_decl.func_type) : g_type_void;
@@ -2558,7 +2725,7 @@ static void analyze_function(Sema *s, ASTNode *fn) {
         s->current_stack_offset = 0;
 
         /* If this is a method, inject 'this' pointer as first local/param */
-        if (cls_type) {
+        if (cls_type && fn->func_decl.is_method) {
             Symbol *this_sym = arena_alloc_zero(s->arena, sizeof(Symbol));
             this_sym->kind = SYM_VAR;
             this_sym->name = str_intern("this");
@@ -2604,7 +2771,8 @@ static void analyze_function(Sema *s, ASTNode *fn) {
 static void sema_register_classes(Sema *s, ASTNode *decl, const char *ns_prefix) {
     if (!decl) return;
     if (decl->kind == AST_DECL_CLASS) {
-        Type *cls = type_new(s->arena, TYPE_CLASS);
+        Type *parsed_class = decl->class_decl.class_type;
+        Type *cls = parsed_class ? parsed_class : type_new(s->arena, TYPE_CLASS);
         const char *full_name = decl->class_decl.name;
         if (ns_prefix && strstr(decl->class_decl.name, "::") == NULL) {
             char buf[256];
@@ -2635,11 +2803,27 @@ static void sema_register_classes(Sema *s, ASTNode *decl, const char *ns_prefix)
                 qsym->is_global = true;
                 add_symbol(s->global_scope, qsym);
             }
+            if (mdecl->kind == AST_DECL_ENUM) {
+                for (int i = 0; i < mdecl->enum_decl.count; i++) {
+                    Symbol *item = arena_alloc_zero(s->arena, sizeof(*item));
+                    item->kind = SYM_VAR;
+                    item->name = mdecl->enum_decl.item_names[i];
+                    item->type = g_type_int;
+                    item->is_global = true;
+                    item->is_const_value = true;
+                    item->const_value = mdecl->enum_decl.item_values[i];
+                    add_symbol(s->global_scope, item);
+                }
+            }
         }
 
         cls->name = full_name;
         cls->cls.class_name = full_name;
         cls->cls.fields = decl->class_decl.fields;
+        if (parsed_class) {
+            cls->cls.bases = parsed_class->cls.bases;
+            cls->cls.base_count = parsed_class->cls.base_count;
+        }
         cls->cls.is_union = decl->class_decl.is_union;
         layout_class(s, cls);
         decl->class_decl.class_type = cls;
@@ -2762,6 +2946,9 @@ static void sema_analyze_decls(Sema *s, ASTNode *decl, const char *ns_prefix) {
     if (!decl) return;
     if (decl->kind == AST_STMT_DECL_LIST) {
         for (int i = 0; i < decl->block.count; i++) sema_analyze_decls(s, decl->block.stmts[i], ns_prefix);
+    } else if (decl->kind == AST_DECL_TEMPLATE && decl->template_decl.decl &&
+               decl->template_decl.decl->kind == AST_STMT_VAR_DECL) {
+        sema_analyze_decls(s, decl->template_decl.decl, ns_prefix);
     } else if (decl->kind == AST_DECL_FUNC) {
         if (!decl->func_decl.class_owner && ns_prefix) {
             decl->func_decl.class_owner = ns_prefix;
@@ -2802,8 +2989,10 @@ static void sema_analyze_decls(Sema *s, ASTNode *decl, const char *ns_prefix) {
         decl->var_decl.var_type = resolve_type(s, decl->var_decl.var_type);
         if (decl->var_decl.var_type && decl->var_decl.var_type->kind == TYPE_ARRAY &&
             decl->var_decl.var_type->array.count == 0 && decl->var_decl.init &&
-            decl->var_decl.init->kind == AST_INIT_LIST) {
-            decl->var_decl.var_type->array.count = (size_t)decl->var_decl.init->init_list.count;
+            (decl->var_decl.init->kind == AST_INIT_LIST || decl->var_decl.init->kind == AST_LIT_STR)) {
+            decl->var_decl.var_type->array.count = decl->var_decl.init->kind == AST_INIT_LIST
+                                                ? (size_t)decl->var_decl.init->init_list.count
+                                                : decl->var_decl.init->str_lit.len + 1;
             decl->var_decl.var_type->size = decl->var_decl.var_type->array.base->size *
                                            decl->var_decl.var_type->array.count;
         }

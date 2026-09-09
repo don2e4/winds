@@ -40,6 +40,7 @@ install(DIRECTORY include/winds/std
 )
 
 include(CTest)
+option(WINDS_ENABLE_CORPUS_TESTS "Enable network-backed pinned corpus tests" OFF)
 if(BUILD_TESTING)
     find_program(BASH_EXECUTABLE bash REQUIRED)
 
@@ -104,4 +105,11 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND} -E env WINDS=$<TARGET_FILE:winds> ${BASH_EXECUTABLE} tests/updates.sh
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
+    if(WINDS_ENABLE_CORPUS_TESTS)
+        add_test(
+            NAME test_corpus
+            COMMAND ${CMAKE_COMMAND} -E env WINDS=$<TARGET_FILE:winds> ${BASH_EXECUTABLE} tests/corpus.sh
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+    endif()
 endif()

@@ -1,5 +1,6 @@
 #ifndef winds_math_h
 #define winds_math_h
+#define INFINITY 1e999
 #ifdef __cplusplus
 extern "C" {
 #endif

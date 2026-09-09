@@ -7,6 +7,8 @@ Type *g_type_bool = NULL;
 Type *g_type_char = NULL;
 Type *g_type_int  = NULL;
 Type *g_type_long = NULL;
+Type *g_type_float = NULL;
+Type *g_type_double = NULL;
 
 void type_system_init(Arena *arena) {
     g_type_void = arena_alloc_zero(arena, sizeof(Type));
@@ -38,6 +40,18 @@ void type_system_init(Arena *arena) {
     g_type_long->size = 8;
     g_type_long->align = 8;
     g_type_long->name = str_intern("long");
+
+    g_type_float = arena_alloc_zero(arena, sizeof(Type));
+    g_type_float->kind = TYPE_FLOAT;
+    g_type_float->size = 4;
+    g_type_float->align = 4;
+    g_type_float->name = str_intern("float");
+
+    g_type_double = arena_alloc_zero(arena, sizeof(Type));
+    g_type_double->kind = TYPE_DOUBLE;
+    g_type_double->size = 8;
+    g_type_double->align = 8;
+    g_type_double->name = str_intern("double");
 }
 
 Type *type_new(Arena *arena, TypeKind kind) {
@@ -113,6 +127,7 @@ bool type_equals(Type *a, Type *b) {
     if (a == b) return true;
     if (!a || !b) return false;
     if (a->kind != b->kind) return false;
+    if (type_is_integer(a) && a->is_unsigned != b->is_unsigned) return false;
 
     switch (a->kind) {
         case TYPE_PTR:
@@ -160,6 +175,10 @@ bool type_is_integer(Type *t) {
            t->kind == TYPE_INT  || t->kind == TYPE_LONG;
 }
 
+bool type_is_float(Type *t) {
+    return t && (t->kind == TYPE_FLOAT || t->kind == TYPE_DOUBLE);
+}
+
 bool type_is_pointer_or_ref(Type *t) {
     if (!t) return false;
     return t->kind == TYPE_PTR || t->kind == TYPE_REF;
@@ -174,6 +193,8 @@ const char *type_to_string(Arena *arena, Type *t) {
         case TYPE_CHAR: return "char";
         case TYPE_INT:  return "int";
         case TYPE_LONG: return "long";
+        case TYPE_FLOAT: return "float";
+        case TYPE_DOUBLE: return "double";
         case TYPE_PTR:
             snprintf(buf, sizeof(buf), "%s*", type_to_string(arena, t->ptr.base));
             return arena_strdup(arena, buf);
@@ -221,6 +242,9 @@ void ast_dump(ASTNode *node, int indent) {
     switch (node->kind) {
         case AST_LIT_INT:
             printf("IntLiteral: %ld\n", (long)node->int_val);
+            break;
+        case AST_LIT_FLOAT:
+            printf("FloatLiteral: %.17g\n", node->float_val);
             break;
         case AST_LIT_STR:
             printf("StringLiteral: \"%s\"\n", node->str_lit.val);
@@ -431,7 +455,7 @@ int64_t eval_integer_constant(ASTNode *node, bool *ok) {
     if (node->kind == AST_SIZEOF) {
         Type *t = node->sizeof_expr.target_type;
         if (!t && node->sizeof_expr.target_expr) t = node->sizeof_expr.target_expr->type;
-        if (t && t->kind != TYPE_CLASS) return (int64_t)t->size;
+        if (t && t->size) return (int64_t)t->size;
     }
     if (node->kind == AST_CONDITIONAL) {
         int64_t condition = eval_integer_constant(node->conditional.cond, ok);
@@ -440,6 +464,27 @@ int64_t eval_integer_constant(ASTNode *node, bool *ok) {
     }
     if (node->kind == AST_CAST) return eval_integer_constant(node->cast.expr, ok);
     if (node->kind == AST_UNARY) {
+        if (node->unary.op == TOK_AMP && node->unary.operand->kind == AST_INDEX) {
+            ASTNode *index = node->unary.operand;
+            int64_t base = eval_integer_constant(index->index_expr.target, ok);
+            int64_t subscript = eval_integer_constant(index->index_expr.index, ok);
+            if (*ok) {
+                Type *type = index->index_expr.target->type;
+                if (type && (type->kind == TYPE_PTR || type->kind == TYPE_ARRAY))
+                    return base + subscript * (int64_t)type->ptr.base->size;
+            }
+        }
+        if (node->unary.op == TOK_AMP && node->unary.operand->kind == AST_MEMBER) {
+            ASTNode *member = node->unary.operand;
+            ASTNode *object = member->member.object;
+            Type *type = object && object->kind == AST_CAST ? object->cast.target_type : NULL;
+            if (member->member.is_arrow && type && type->kind == TYPE_PTR) type = type->ptr.base;
+            if (type && type->kind == TYPE_CLASS) {
+                for (Field *field = type->cls.fields; field; field = field->next) {
+                    if (!strcmp(field->name, member->member.member_name)) return field->offset;
+                }
+            }
+        }
         int64_t value = eval_integer_constant(node->unary.operand, ok);
         if (!*ok) return 0;
         if (node->unary.op == TOK_MINUS) return (int64_t)(0 - (uint64_t)value);

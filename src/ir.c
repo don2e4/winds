@@ -103,12 +103,32 @@ static void emit_jmp_if_not_zero(IRFunction *fn, Arena *arena, IROperand cond, c
 static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr);
 static void lower_stmt(IRModule *mod, IRFunction *fn, ASTNode *stmt, const char *break_lbl, const char *cont_lbl);
 static int lower_base_address(IRModule *mod, IRFunction *fn, ASTNode *object, bool is_arrow);
+static int lower_index_address(IRModule *mod, IRFunction *fn, ASTNode *expr);
 
 static Type *s_current_func_ret = NULL;
+
+static int fp_size(Type *type) {
+    return type && type->kind == TYPE_FLOAT ? 4 : type && type->kind == TYPE_DOUBLE ? 8 : 0;
+}
+
+static IROperand cast_operand(IRModule *mod, IRFunction *fn, IROperand value, Type *target) {
+    int target_fp = fp_size(target);
+    bool target_unsigned = target && target->is_unsigned;
+    bool narrow_integer = target && type_is_integer(target) && target->kind != TYPE_BOOL && target->size < 8;
+    if (!narrow_integer && target_fp == value.fp_size && (target_fp || target_unsigned == value.is_unsigned)) return value;
+    IROperand result = {.vreg = alloc_vreg(fn), .fp_size = target_fp, .is_unsigned = target_unsigned};
+    IRInst *cast = make_inst(mod->arena, IR_CAST);
+    cast->dest = result;
+    cast->src1 = value;
+    cast->size = target ? (int)target->size : 8;
+    ir_emit(fn, cast);
+    return result;
+}
 
 static int lower_base_address(IRModule *mod, IRFunction *fn, ASTNode *object, bool is_arrow) {
     Arena *arena = mod->arena;
     if (!object) return 0;
+    if (is_arrow) return lower_expr(mod, fn, object).vreg;
 
     if (object->kind == AST_VAR_REF) {
         Symbol *sym = object->var_ref.sym;
@@ -127,7 +147,7 @@ static int lower_base_address(IRModule *mod, IRFunction *fn, ASTNode *object, bo
             addr->src1.label = arena_strdup(arena, clean_name);
             ir_emit(fn, addr);
             return addr_vreg;
-        } else if (is_arrow || (sym && (sym->is_ref || (sym->type && (sym->type->kind == TYPE_REF || sym->type->kind == TYPE_PTR))))) {
+        } else if (sym && (sym->is_ref || (sym->type && (sym->type->kind == TYPE_REF || sym->type->kind == TYPE_PTR)))) {
             /* Variable is a pointer or reference: stack slot holds the address of target */
             int ptr_vreg = alloc_vreg(fn);
             IRInst *load = make_inst(arena, IR_LOAD_STACK);
@@ -144,11 +164,13 @@ static int lower_base_address(IRModule *mod, IRFunction *fn, ASTNode *object, bo
             ir_emit(fn, addr);
             return addr_vreg;
         }
+    } else if (object->kind == AST_INDEX) {
+        return lower_index_address(mod, fn, object);
     } else if (object->kind == AST_UNARY && object->unary.op == TOK_STAR) {
         /* (*ptr).field -> evaluate ptr */
         IROperand ptr = lower_expr(mod, fn, object->unary.operand);
         return ptr.vreg;
-    } else if (object->kind == AST_MEMBER && object->type && object->type->kind == TYPE_CLASS) {
+    } else if (object->kind == AST_MEMBER) {
         int parent_base = lower_base_address(mod, fn, object->member.object, object->member.is_arrow);
         int offset = object->member.field ? object->member.field->offset : 0;
         int res_vreg = alloc_vreg(fn);
@@ -164,24 +186,65 @@ static int lower_base_address(IRModule *mod, IRFunction *fn, ASTNode *object, bo
     }
 }
 
+static int lower_index_address(IRModule *mod, IRFunction *fn, ASTNode *expr) {
+    IROperand base = lower_expr(mod, fn, expr->index_expr.target);
+    IROperand idx = lower_expr(mod, fn, expr->index_expr.index);
+    int elem_size = (expr->type && expr->type->size > 0) ? (int)expr->type->size : 4;
+    if (elem_size > 1) {
+        IRInst *mul = make_inst(mod->arena, IR_MUL);
+        mul->dest.vreg = alloc_vreg(fn);
+        mul->src1 = idx;
+        mul->src2.imm = elem_size;
+        ir_emit(fn, mul);
+        idx = mul->dest;
+    }
+    IRInst *add = make_inst(mod->arena, IR_ADD);
+    add->dest.vreg = alloc_vreg(fn);
+    add->src1 = base;
+    add->src2 = idx;
+    ir_emit(fn, add);
+    return add->dest.vreg;
+}
+
 static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
     Arena *arena = mod->arena;
     IROperand res = {0};
 
     if (!expr) return res;
+    res.fp_size = fp_size(expr->type);
+    res.is_unsigned = expr->type && expr->type->is_unsigned;
 
     switch (expr->kind) {
         case AST_PACK_EXPANSION:
             return expr->pack_expansion.expr ? lower_expr(mod, fn, expr->pack_expansion.expr) : res;
 
         case AST_CAST:
-            return expr->cast.expr ? lower_expr(mod, fn, expr->cast.expr) : res;
+            return expr->cast.expr ? cast_operand(mod, fn, lower_expr(mod, fn, expr->cast.expr), expr->cast.target_type) : res;
 
         case AST_LIT_INT: {
             res.vreg = alloc_vreg(fn);
             IRInst *inst = make_inst(arena, IR_IMM);
             inst->dest = res;
             inst->src1.imm = expr->int_val;
+            ir_emit(fn, inst);
+            return res;
+        }
+
+        case AST_LIT_FLOAT: {
+            res.vreg = alloc_vreg(fn);
+            IRInst *inst = make_inst(arena, IR_IMM);
+            inst->dest = res;
+            if (res.fp_size == 4) {
+                float value = (float)expr->float_val;
+                uint32_t bits;
+                memcpy(&bits, &value, sizeof(bits));
+                inst->src1.imm = bits;
+            } else {
+                uint64_t bits;
+                memcpy(&bits, &expr->float_val, sizeof(bits));
+                inst->src1.imm = (int64_t)bits;
+            }
+            inst->src1.fp_size = res.fp_size;
             ir_emit(fn, inst);
             return res;
         }
@@ -303,6 +366,7 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                 inst->dest = res;
                 inst->src1.offset = sym->stack_offset;
                 ir_emit(fn, inst);
+                res = cast_operand(mod, fn, res, sym->type);
             }
             return res;
         }
@@ -452,7 +516,17 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
             IROperand left = lower_expr(mod, fn, expr->binary.left);
             IROperand right = lower_expr(mod, fn, expr->binary.right);
 
+            int arithmetic_fp = fp_size(expr->binary.left ? expr->binary.left->type : NULL);
+            int right_fp = fp_size(expr->binary.right ? expr->binary.right->type : NULL);
+            if (right_fp > arithmetic_fp) arithmetic_fp = right_fp;
+            if (arithmetic_fp) {
+                Type *target = arithmetic_fp == 4 ? g_type_float : g_type_double;
+                left = cast_operand(mod, fn, left, target);
+                right = cast_operand(mod, fn, right, target);
+            }
+
             /* Pointer arithmetic scaling for + and - */
+            size_t pointer_difference_size = 0;
             if (expr->binary.op == TOK_PLUS || expr->binary.op == TOK_MINUS) {
                 Type *lt = expr->binary.left ? expr->binary.left->type : NULL;
                 Type *rt = expr->binary.right ? expr->binary.right->type : NULL;
@@ -462,7 +536,10 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                 if (lt && (lt->kind == TYPE_PTR || lt->kind == TYPE_ARRAY)) {
                     Type *elem_t = (lt->kind == TYPE_PTR) ? lt->ptr.base : lt->array.base;
                     size_t elem_size = (elem_t && elem_t->size > 0) ? elem_t->size : 1;
-                    if (elem_size > 1 && (!rt || (rt->kind != TYPE_PTR && rt->kind != TYPE_ARRAY))) {
+                    if (expr->binary.op == TOK_MINUS && rt &&
+                        (rt->kind == TYPE_PTR || rt->kind == TYPE_ARRAY)) {
+                        pointer_difference_size = elem_size;
+                    } else if (elem_size > 1) {
                         int scaled_vreg = alloc_vreg(fn);
                         IRInst *scale_inst = make_inst(arena, IR_MUL);
                         scale_inst->dest.vreg = scaled_vreg;
@@ -489,6 +566,7 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
             }
 
             res.vreg = alloc_vreg(fn);
+            if (expr->type && expr->type->kind == TYPE_BOOL) res.fp_size = 0;
 
             IROp op = IR_ADD;
             switch (expr->binary.op) {
@@ -515,7 +593,16 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
             inst->dest = res;
             inst->src1 = left;
             inst->src2 = right;
+            inst->is_unsigned = left.is_unsigned || right.is_unsigned;
             ir_emit(fn, inst);
+            if (pointer_difference_size > 1) {
+                IRInst *divide = make_inst(arena, IR_DIV);
+                divide->dest.vreg = alloc_vreg(fn);
+                divide->src1 = res;
+                divide->src2.imm = (int64_t)pointer_difference_size;
+                ir_emit(fn, divide);
+                return divide->dest;
+            }
             return res;
         }
 
@@ -537,6 +624,10 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
             SourceLoc loc = expr->loc;
             (void)loc;
             if (expr->unary.op == TOK_AMP) {
+                if (expr->unary.operand->kind == AST_MEMBER || expr->unary.operand->kind == AST_INDEX) {
+                    res.vreg = lower_base_address(mod, fn, expr->unary.operand, false);
+                    return res;
+                }
                 /* Address-of &x */
                 if (expr->unary.operand->kind == AST_VAR_REF) {
                     Symbol *sym = expr->unary.operand->var_ref.sym;
@@ -619,7 +710,10 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                     IRInst *math = make_inst(arena, expr->unary.op == TOK_INC ? IR_ADD : IR_SUB);
                     math->dest.vreg = new_vreg;
                     math->src1.vreg = old_vreg;
-                    math->src2.imm = 1;
+                    Type *value_type = sym->type;
+                    if (value_type && value_type->kind == TYPE_REF) value_type = value_type->ref.base;
+                    math->src2.imm = value_type && value_type->kind == TYPE_PTR && value_type->ptr.base
+                                        ? (int64_t)value_type->ptr.base->size : 1;
                     ir_emit(fn, math);
 
                     IRInst *store = make_inst(arena, sym->is_global ? IR_STORE_GLOBAL : IR_STORE_STACK);
@@ -635,14 +729,70 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                     res.vreg = expr->unary.is_prefix ? new_vreg : old_vreg;
                     return res;
                 }
+                if (expr->unary.operand->kind == AST_MEMBER) {
+                    ASTNode *member = expr->unary.operand;
+                    IROperand old = lower_expr(mod, fn, member);
+                    IROperand next = {.vreg = alloc_vreg(fn)};
+                    IRInst *math = make_inst(arena, expr->unary.op == TOK_INC ? IR_ADD : IR_SUB);
+                    math->dest = next;
+                    math->src1 = old;
+                    Type *value_type = member->type;
+                    if (value_type && value_type->kind == TYPE_REF) value_type = value_type->ref.base;
+                    math->src2.imm = value_type && value_type->kind == TYPE_PTR && value_type->ptr.base
+                                        ? (int64_t)value_type->ptr.base->size : 1;
+                    ir_emit(fn, math);
+
+                    IRInst *store = make_inst(arena, IR_STORE);
+                    store->dest.vreg = lower_base_address(mod, fn, member->member.object,
+                                                          member->member.is_arrow);
+                    store->dest.offset = member->member.field ? member->member.field->offset : 0;
+                    store->src1 = next;
+                    store->size = member->member.field && member->member.field->type
+                                ? (int)member->member.field->type->size : 8;
+                    ir_emit(fn, store);
+                    return expr->unary.is_prefix ? next : old;
+                }
             }
             break;
         }
 
         case AST_ASSIGN: {
+            Type *target_type = expr->assign.target ? expr->assign.target->type : NULL;
+            if (expr->assign.op == TOK_ASSIGN && target_type && target_type->kind == TYPE_CLASS) {
+                int source = lower_base_address(mod, fn, expr->assign.value, false);
+                int target = lower_base_address(mod, fn, expr->assign.target, false);
+                int size = (int)target_type->size;
+                for (int off = 0; off < size; off += 8) {
+                    IRInst *load = make_inst(arena, IR_LOAD);
+                    load->dest.vreg = alloc_vreg(fn);
+                    load->src1.vreg = source;
+                    load->src2.offset = off;
+                    load->size = size - off < 8 ? size - off : 8;
+                    ir_emit(fn, load);
+                    IRInst *store = make_inst(arena, IR_STORE);
+                    store->dest.vreg = target;
+                    store->dest.offset = off;
+                    store->src1 = load->dest;
+                    store->size = load->size;
+                    ir_emit(fn, store);
+                }
+                return (IROperand){.vreg = target};
+            }
+
             IROperand val = lower_expr(mod, fn, expr->assign.value);
+            val = cast_operand(mod, fn, val, target_type);
 
             if (expr->assign.op != TOK_ASSIGN) {
+                if (target_type && target_type->kind == TYPE_PTR &&
+                    (expr->assign.op == TOK_PLUS_EQ || expr->assign.op == TOK_MINUS_EQ) &&
+                    target_type->ptr.base->size > 1) {
+                    IRInst *scale = make_inst(arena, IR_MUL);
+                    scale->dest.vreg = alloc_vreg(fn);
+                    scale->src1 = val;
+                    scale->src2.imm = (int64_t)target_type->ptr.base->size;
+                    ir_emit(fn, scale);
+                    val = scale->dest;
+                }
                 IROperand cur = lower_expr(mod, fn, expr->assign.target);
                 int res_vreg = alloc_vreg(fn);
                 IRInst *op_inst = NULL;
@@ -663,9 +813,11 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                     op_inst->dest.vreg = res_vreg;
                     op_inst->src1 = cur;
                     op_inst->src2 = val;
+                    op_inst->is_unsigned = cur.is_unsigned || val.is_unsigned;
                     ir_emit(fn, op_inst);
                     val.vreg = res_vreg;
                     val.imm = 0;
+                    val = cast_operand(mod, fn, val, target_type);
                 }
             }
 
@@ -701,24 +853,6 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                         store->src1 = val;
                         store->size = (sym->type && sym->type->kind == TYPE_REF && sym->type->ref.base && sym->type->ref.base->size > 0) ? (int)sym->type->ref.base->size : 8;
                         ir_emit(fn, store);
-                    } else if (sym->type && sym->type->kind == TYPE_CLASS && sym->type->size > 8 &&
-                               (expr->assign.value->kind == AST_VAR_REF || expr->assign.value->kind == AST_MEMBER)) {
-                        int src_addr = lower_base_address(mod, fn, expr->assign.value, false);
-                        int total = (int)sym->type->size;
-                        for (int off = 0; off < total; off += 8) {
-                            int chunk_vreg = alloc_vreg(fn);
-                            IRInst *load = make_inst(arena, IR_LOAD);
-                            load->dest.vreg = chunk_vreg;
-                            load->src1.vreg = src_addr;
-                            load->src2.offset = off;
-                            load->size = (total - off < 8) ? (total - off) : 8;
-                            ir_emit(fn, load);
-
-                            IRInst *store = make_inst(arena, IR_STORE_STACK);
-                            store->dest.offset = sym->stack_offset + off;
-                            store->src1.vreg = chunk_vreg;
-                            ir_emit(fn, store);
-                        }
                     } else {
                         IRInst *store = make_inst(arena, IR_STORE_STACK);
                         store->dest.offset = sym->stack_offset;
@@ -856,7 +990,7 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                 ir_emit(fn, ainst);
 
                 int total_cargs = 1 + expr->call.arg_count;
-                IROperand *c_args = arena_alloc(arena, sizeof(IROperand) * total_cargs);
+                IROperand *c_args = arena_alloc_zero(arena, sizeof(IROperand) * total_cargs);
                 c_args[0].vreg = addr_vreg;
                 for (int i = 0; i < expr->call.arg_count; i++) {
                     c_args[1 + i] = lower_expr(mod, fn, expr->call.args[i]);
@@ -878,7 +1012,11 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
             }
 
             int total_args = expr->call.arg_count + (expr->call.is_method ? 1 : 0);
-            IROperand *call_args = arena_alloc(arena, sizeof(IROperand) * (total_args > 0 ? total_args : 1));
+            for (int i = 0; i < expr->call.arg_count; i++) {
+                Type *t = expr->call.args[i]->type;
+                if (t && t->kind == TYPE_CLASS) total_args += (int)((t->size + 7) / 8);
+            }
+            IROperand *call_args = arena_alloc_zero(arena, sizeof(IROperand) * (total_args > 0 ? total_args : 1));
             int arg_idx = 0;
 
             if (expr->call.is_method) {
@@ -897,7 +1035,24 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                 Type *expected_t = param_type_iter ? param_type_iter->type : NULL;
                 if (param_type_iter) param_type_iter = param_type_iter->next;
 
-                if (expected_t && expected_t->kind == TYPE_REF) {
+                if (expected_t && expected_t->kind == TYPE_CLASS) {
+                    int chunks = (int)((expected_t->size + 7) / 8);
+                    int gp_used = 0;
+                    for (int a = 0; a < arg_idx; a++)
+                        if (!call_args[a].fp_size && !call_args[a].on_stack) gp_used++;
+                    bool on_stack = chunks > 2 || gp_used + chunks > 6;
+                    int address = lower_base_address(mod, fn, expr->call.args[i], false);
+                    for (int chunk = 0; chunk < chunks; chunk++) {
+                        IRInst *load = make_inst(arena, IR_LOAD);
+                        load->dest.vreg = alloc_vreg(fn);
+                        load->src1.vreg = address;
+                        load->src2.offset = chunk * 8;
+                        load->size = 8;
+                        ir_emit(fn, load);
+                        call_args[arg_idx] = load->dest;
+                        call_args[arg_idx++].on_stack = on_stack;
+                    }
+                } else if (expected_t && expected_t->kind == TYPE_REF) {
                     if (expr->call.args[i]->kind == AST_VAR_REF) {
                         Symbol *asym = expr->call.args[i]->var_ref.sym;
                         if (asym && asym->is_global) {
@@ -947,7 +1102,8 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                         call_args[arg_idx++] = lower_expr(mod, fn, expr->call.args[i]);
                     }
                 } else {
-                    call_args[arg_idx++] = lower_expr(mod, fn, expr->call.args[i]);
+                    IROperand arg = lower_expr(mod, fn, expr->call.args[i]);
+                    call_args[arg_idx++] = expected_t ? cast_operand(mod, fn, arg, expected_t) : arg;
                 }
             }
 
@@ -964,7 +1120,7 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                 call->src1.label = expr->call.name;
             }
             call->call_args = call_args;
-            call->call_arg_count = total_args;
+            call->call_arg_count = arg_idx;
             ir_emit(fn, call);
             return res;
         }
@@ -972,25 +1128,26 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
         case AST_NEW: {
             Type *t = expr->new_expr.target_type;
             size_t sz = t->size > 0 ? t->size : 8;
+            int ptr_vreg;
+            if (expr->new_expr.placement) {
+                ptr_vreg = lower_expr(mod, fn, expr->new_expr.placement).vreg;
+            } else {
+                IROperand sz_op = {.vreg = alloc_vreg(fn)};
+                IRInst *imm = make_inst(arena, IR_IMM);
+                imm->dest = sz_op;
+                imm->src1.imm = (int64_t)sz;
+                ir_emit(fn, imm);
 
-            /* Call malloc(sz) */
-            IROperand sz_op;
-            sz_op.vreg = alloc_vreg(fn);
-            IRInst *imm = make_inst(arena, IR_IMM);
-            imm->dest = sz_op;
-            imm->src1.imm = (int64_t)sz;
-            ir_emit(fn, imm);
-
-            IROperand *margs = arena_alloc(arena, sizeof(IROperand));
-            margs[0] = sz_op;
-
-            int ptr_vreg = alloc_vreg(fn);
-            IRInst *mcall = make_inst(arena, IR_CALL);
-            mcall->dest.vreg = ptr_vreg;
-            mcall->src1.label = str_intern("malloc");
-            mcall->call_args = margs;
-            mcall->call_arg_count = 1;
-            ir_emit(fn, mcall);
+                IROperand *margs = arena_alloc_zero(arena, sizeof(IROperand));
+                margs[0] = sz_op;
+                ptr_vreg = alloc_vreg(fn);
+                IRInst *mcall = make_inst(arena, IR_CALL);
+                mcall->dest.vreg = ptr_vreg;
+                mcall->src1.label = str_intern("malloc");
+                mcall->call_args = margs;
+                mcall->call_arg_count = 1;
+                ir_emit(fn, mcall);
+            }
 
             /* If class has constructor, invoke constructor(ptr, args) */
             if (t->kind == TYPE_CLASS) {
@@ -1008,7 +1165,7 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                 }
 
                 int cargs_count = 1 + expr->new_expr.arg_count;
-                IROperand *cargs = arena_alloc(arena, sizeof(IROperand) * cargs_count);
+                IROperand *cargs = arena_alloc_zero(arena, sizeof(IROperand) * cargs_count);
                 cargs[0].vreg = ptr_vreg;
 
                 for (int i = 0; i < expr->new_expr.arg_count; i++) {
@@ -1034,7 +1191,7 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
             if (target_t && target_t->kind == TYPE_PTR && target_t->ptr.base && target_t->ptr.base->kind == TYPE_CLASS) {
                 Type *cls = target_t->ptr.base;
                 const char *dtor_name = mangle_function_name(arena, cls->name, cls->name, NULL, false, true);
-                IROperand *dargs = arena_alloc(arena, sizeof(IROperand));
+            IROperand *dargs = arena_alloc_zero(arena, sizeof(IROperand));
                 dargs[0] = target;
                 IRInst *dcall = make_inst(arena, IR_CALL);
                 dcall->dest.vreg = alloc_vreg(fn);
@@ -1045,7 +1202,7 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
             }
 
             /* Call free(target) */
-            IROperand *fargs = arena_alloc(arena, sizeof(IROperand));
+            IROperand *fargs = arena_alloc_zero(arena, sizeof(IROperand));
             fargs[0] = target;
 
             IRInst *fcall = make_inst(arena, IR_CALL);
@@ -1058,33 +1215,8 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
         }
 
         case AST_INDEX: {
-            IROperand base = lower_expr(mod, fn, expr->index_expr.target);
-            IROperand idx = lower_expr(mod, fn, expr->index_expr.index);
             int elem_size = (expr->type && expr->type->size > 0) ? (int)expr->type->size : 4;
-
-            int addr_vreg;
-            if (elem_size > 1) {
-                int scaled_vreg = alloc_vreg(fn);
-                IRInst *mul = make_inst(arena, IR_MUL);
-                mul->dest.vreg = scaled_vreg;
-                mul->src1 = idx;
-                mul->src2.imm = elem_size;
-                ir_emit(fn, mul);
-
-                addr_vreg = alloc_vreg(fn);
-                IRInst *add = make_inst(arena, IR_ADD);
-                add->dest.vreg = addr_vreg;
-                add->src1 = base;
-                add->src2.vreg = scaled_vreg;
-                ir_emit(fn, add);
-            } else {
-                addr_vreg = alloc_vreg(fn);
-                IRInst *add = make_inst(arena, IR_ADD);
-                add->dest.vreg = addr_vreg;
-                add->src1 = base;
-                add->src2 = idx;
-                ir_emit(fn, add);
-            }
+            int addr_vreg = lower_index_address(mod, fn, expr);
 
             if (expr->type && (expr->type->kind == TYPE_ARRAY || expr->type->kind == TYPE_CLASS)) {
                 res.vreg = addr_vreg;
@@ -1106,6 +1238,31 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
 
     return res;
 }
+
+static void lower_struct_init(IRModule *mod, IRFunction *fn, Type *type, ASTNode *init, int offset) {
+    if (type->kind == TYPE_CLASS) {
+        int i = 0;
+        for (Field *field = type->cls.fields; field; field = field->next, i++) {
+            ASTNode *item = init && init->kind == AST_INIT_LIST && i < init->init_list.count
+                          ? init->init_list.items[i] : NULL;
+            lower_struct_init(mod, fn, field->type, item, offset + field->offset);
+        }
+        return;
+    }
+    IROperand value = init ? cast_operand(mod, fn, lower_expr(mod, fn, init), type) : (IROperand){0};
+    IRInst *addr = make_inst(mod->arena, IR_ADDR_STACK);
+    addr->dest.vreg = alloc_vreg(fn);
+    addr->src1.offset = offset;
+    ir_emit(fn, addr);
+    IRInst *store = make_inst(mod->arena, IR_STORE);
+    store->dest = addr->dest;
+    store->src1 = value;
+    store->size = (int)type->size;
+    ir_emit(fn, store);
+}
+
+static void add_global_initializer(IRModule *mod, IRGlobalVar *g, Type *type,
+                                   ASTNode *init, int offset, int *index);
 
 static void lower_stmt(IRModule *mod, IRFunction *fn, ASTNode *stmt, const char *break_lbl, const char *cont_lbl) {
     Arena *arena = mod->arena;
@@ -1143,19 +1300,18 @@ static void lower_stmt(IRModule *mod, IRFunction *fn, ASTNode *stmt, const char 
                     if (stmt->var_decl.init && stmt->var_decl.init->kind == AST_LIT_INT) {
                         global->is_init = true;
                         global->init_val = stmt->var_decl.init->int_val;
-                    } else if (stmt->var_decl.init && stmt->var_decl.init->kind == AST_INIT_LIST) {
+                    } else if (stmt->var_decl.init) {
                         global->is_init = true;
-                        global->init_count = stmt->var_decl.init->init_list.count;
                         Type *scalar = sym->type;
                         while (scalar->kind == TYPE_ARRAY) scalar = scalar->array.base;
                         global->elem_size = (int)scalar->size;
-                        global->init_values = arena_alloc_zero(arena, sizeof(int64_t) * (size_t)global->init_count);
-                        for (int i = 0; i < global->init_count; i++) {
-                            ASTNode *item = stmt->var_decl.init->init_list.items[i];
-                            bool ok = true;
-                            global->init_values[i] = eval_integer_constant(item, &ok);
-                            if (!ok) diag_report(DIAG_ERROR, item->loc, "static initializer must be constant");
-                        }
+                        size_t capacity = global->size ? global->size : 1;
+                        global->init_values = arena_alloc_zero(arena, sizeof(int64_t) * capacity);
+                        global->init_labels = arena_alloc_zero(arena, sizeof(char *) * capacity);
+                        global->init_offsets = arena_alloc_zero(arena, sizeof(int) * capacity);
+                        global->init_sizes = arena_alloc_zero(arena, sizeof(int) * capacity);
+                        add_global_initializer(mod, global, sym->type, stmt->var_decl.init, 0,
+                                               &global->init_count);
                     }
                     global->next = mod->globals;
                     mod->globals = global;
@@ -1166,7 +1322,7 @@ static void lower_stmt(IRModule *mod, IRFunction *fn, ASTNode *stmt, const char 
             if (sym->is_ref) {
                 /* Reference: target address must be stored in stack pointer slot */
                 if (stmt->var_decl.init) {
-                    IROperand addr;
+                    IROperand addr = {0};
                     if (stmt->var_decl.init->kind == AST_VAR_REF) {
                         Symbol *target_sym = stmt->var_decl.init->var_ref.sym;
                         addr.vreg = alloc_vreg(fn);
@@ -1184,6 +1340,10 @@ static void lower_stmt(IRModule *mod, IRFunction *fn, ASTNode *stmt, const char 
                     ir_emit(fn, store);
                 }
             } else if (stmt->var_decl.init) {
+                if (stmt->var_decl.init->kind == AST_INIT_LIST && sym->type->kind == TYPE_CLASS) {
+                    lower_struct_init(mod, fn, sym->type, stmt->var_decl.init, sym->stack_offset);
+                    break;
+                }
                 if (stmt->var_decl.init->kind == AST_INIT_LIST && sym->type->kind == TYPE_ARRAY) {
                     Type *scalar = sym->type;
                     while (scalar->kind == TYPE_ARRAY) scalar = scalar->array.base;
@@ -1228,7 +1388,7 @@ static void lower_stmt(IRModule *mod, IRFunction *fn, ASTNode *stmt, const char 
                         ctor_name = mangle_function_name(arena, owner, owner, cparams_head, true, false);
                     }
                     int cargs_count = 1 + stmt->var_decl.init->new_expr.arg_count;
-                    IROperand *cargs = arena_alloc(arena, sizeof(IROperand) * cargs_count);
+                    IROperand *cargs = arena_alloc_zero(arena, sizeof(IROperand) * cargs_count);
                     cargs[0].vreg = addr_vreg;
 
                     for (int i = 0; i < stmt->var_decl.init->new_expr.arg_count; i++) {
@@ -1260,7 +1420,7 @@ static void lower_stmt(IRModule *mod, IRFunction *fn, ASTNode *stmt, const char 
                         ir_emit(fn, store);
                     }
                 } else {
-                    IROperand val = lower_expr(mod, fn, stmt->var_decl.init);
+                    IROperand val = cast_operand(mod, fn, lower_expr(mod, fn, stmt->var_decl.init), sym->type);
                     IRInst *store = make_inst(arena, IR_STORE_STACK);
                     store->dest.offset = sym->stack_offset;
                     store->src1 = val;
@@ -1482,6 +1642,8 @@ static void lower_function(IRModule *mod, ASTNode *fn_node) {
     /* System V AMD64 ABI: function arguments are in RDI, RSI, RDX, RCX, R8, R9.
        Move parameters from registers into stack slots. */
     int reg_idx = 0;
+    int fp_idx = 0;
+    int stack_idx = 0;
     if (fn_node->func_decl.is_method) {
         /* Param 0 is 'this', stored at -8(%rbp) */
         IRInst *st = make_inst(mod->arena, IR_STORE_STACK);
@@ -1495,14 +1657,31 @@ static void lower_function(IRModule *mod, ASTNode *fn_node) {
         ASTNode *pnode = fn_node->func_decl.params[i];
         Symbol *psym = pnode->var_decl.sym;
         if (psym) {
+            if (psym->type->kind == TYPE_CLASS) {
+                int chunks = (int)((psym->type->size + 7) / 8);
+                bool on_stack = chunks > 2 || reg_idx + chunks > 6;
+                for (int chunk = 0; chunk < chunks; chunk++) {
+                    IRInst *st = make_inst(mod->arena, IR_STORE_STACK);
+                    st->dest.offset = psym->stack_offset + chunk * 8;
+                    st->src1.vreg = on_stack ? -2 : -1;
+                    st->src1.imm = on_stack ? 16 + stack_idx++ * 8 : reg_idx++;
+                    ir_emit(fn, st);
+                }
+                continue;
+            }
             IRInst *st = make_inst(mod->arena, IR_STORE_STACK);
             st->dest.offset = psym->stack_offset;
-            if (reg_idx < 6) {
+            int param_fp = fp_size(psym->type);
+            st->src1.fp_size = param_fp;
+            if (param_fp && fp_idx < 8) {
+                st->src1.vreg = -3; /* Incoming XMM argument register */
+                st->src1.imm = fp_idx++;
+            } else if (!param_fp && reg_idx < 6) {
                 st->src1.vreg = -1; /* Incoming arg register */
                 st->src1.imm = reg_idx++;
             } else {
                 st->src1.vreg = -2; /* Incoming stack arg: 16(%rbp), 24(%rbp), etc. */
-                st->src1.imm = 16 + (reg_idx++ - 6) * 8;
+                st->src1.imm = 16 + stack_idx++ * 8;
             }
             ir_emit(fn, st);
         }
@@ -1517,6 +1696,113 @@ static void lower_function(IRModule *mod, ASTNode *fn_node) {
         IRInst *ret = make_inst(mod->arena, IR_RET);
         ret->src1.imm = 0;
         ir_emit(fn, ret);
+    }
+}
+
+static void add_global_initializer(IRModule *mod, IRGlobalVar *g, Type *type,
+                                   ASTNode *init, int offset, int *index) {
+    if (!type || !init || *index >= (int)g->size) return;
+    while (init->kind == AST_CAST && init->cast.expr) init = init->cast.expr;
+    if (type->kind == TYPE_ARRAY && type->array.base &&
+        (type->array.base->size == 1 || type->array.base->kind == TYPE_CHAR) &&
+        init->kind == AST_INIT_LIST && init->init_list.count == 1 &&
+        init->init_list.items[0]->kind == AST_LIT_STR) {
+        init = init->init_list.items[0];
+    }
+    if (type->kind == TYPE_ARRAY && type->array.base &&
+        (type->array.base->size == 1 || type->array.base->kind == TYPE_CHAR) &&
+        init->kind == AST_LIT_STR) {
+        size_t count = type->array.count > 0 ? type->array.count :
+                       (type->size > 0 ? type->size : (init->str_lit.len + 1));
+        const char *val = init->str_lit.val ? init->str_lit.val : "";
+        size_t len = init->str_lit.len;
+        for (size_t k = 0; k < count && *index < (int)g->size; k++) {
+            int i = (*index)++;
+            g->init_offsets[i] = offset + (int)k;
+            g->init_sizes[i] = 1;
+            g->init_values[i] = (k < len) ? (unsigned char)val[k] : 0;
+            g->init_labels[i] = NULL;
+        }
+        return;
+    }
+    if (type->kind == TYPE_ARRAY && init->kind == AST_INIT_LIST) {
+        if (type->array.base->kind == TYPE_ARRAY && init->init_list.count > 0 &&
+            init->init_list.items[0]->kind != AST_INIT_LIST &&
+            init->init_list.items[0]->kind != AST_LIT_STR) {
+            Type *scalar = type;
+            while (scalar->kind == TYPE_ARRAY) scalar = scalar->array.base;
+            for (int i = 0; i < init->init_list.count; i++)
+                add_global_initializer(mod, g, scalar, init->init_list.items[i],
+                                       offset + i * (int)scalar->size, index);
+            return;
+        }
+        size_t stride = type->array.base->size;
+        for (int i = 0; i < init->init_list.count; i++)
+            add_global_initializer(mod, g, type->array.base, init->init_list.items[i],
+                                   offset + (int)((size_t)i * stride), index);
+        return;
+    }
+    if (type->kind == TYPE_CLASS && init->kind == AST_LIT_STR && type->cls.is_union && type->cls.fields) {
+        add_global_initializer(mod, g, type->cls.fields->type, init, offset + type->cls.fields->offset, index);
+        return;
+    }
+    if (type->kind == TYPE_CLASS && init->kind == AST_INIT_LIST) {
+        Field *field = type->cls.fields;
+        for (int i = 0; i < init->init_list.count && field; i++, field = field->next) {
+            add_global_initializer(mod, g, field->type, init->init_list.items[i],
+                                   offset + field->offset, index);
+            if (type->cls.is_union) break;
+        }
+        return;
+    }
+
+    int i = (*index)++;
+    g->init_offsets[i] = offset;
+    g->init_sizes[i] = type->size > 0 ? (int)type->size : 8;
+    Symbol *fsym = init->kind == AST_VAR_REF ? init->var_ref.sym : NULL;
+    Symbol *address_sym = init->kind == AST_UNARY && init->unary.op == TOK_AMP &&
+                          init->unary.operand->kind == AST_VAR_REF
+                        ? init->unary.operand->var_ref.sym : NULL;
+    int64_t address_offset = 0;
+    if (init->kind == AST_UNARY && init->unary.op == TOK_AMP &&
+        init->unary.operand->kind == AST_INDEX) {
+        ASTNode *element = init->unary.operand;
+        ASTNode *base = element->index_expr.target;
+        bool ok = true;
+        int64_t index = eval_integer_constant(element->index_expr.index, &ok);
+        if (ok && base->kind == AST_VAR_REF) {
+            address_sym = base->var_ref.sym;
+            address_offset = index * (int64_t)element->type->size;
+        }
+    }
+    if (init->kind == AST_LIT_STR) {
+        g->init_labels[i] = add_string_literal(mod, init->str_lit.val, init->str_lit.len);
+    } else if ((fsym && (fsym->kind == SYM_FUNC || fsym->is_global)) ||
+               (address_sym && (address_sym->kind == SYM_FUNC || address_sym->is_global))) {
+        if (!fsym) fsym = address_sym;
+        const char *label = fsym->mangled_name ? fsym->mangled_name : fsym->name;
+        char clean[256];
+        snprintf(clean, sizeof(clean), "%s", label);
+        for (int j = 0; clean[j]; j++)
+            if (!isalnum((unsigned char)clean[j]) && clean[j] != '_') clean[j] = '_';
+        if (address_offset) {
+            size_t used = strlen(clean);
+            snprintf(clean + used, sizeof(clean) - used, "%+lld", (long long)address_offset);
+        }
+        g->init_labels[i] = arena_strdup(mod->arena, clean);
+    } else if (init->kind == AST_LIT_FLOAT) {
+        if (type->kind == TYPE_FLOAT) {
+            float value = (float)init->float_val;
+            uint32_t bits;
+            memcpy(&bits, &value, sizeof(bits));
+            g->init_values[i] = bits;
+        } else {
+            memcpy(&g->init_values[i], &init->float_val, sizeof(double));
+        }
+    } else {
+        bool ok = true;
+        g->init_values[i] = eval_integer_constant(init, &ok);
+        if (!ok) diag_report(DIAG_ERROR, init->loc, "global initializer must be constant");
     }
 }
 
@@ -1536,9 +1822,11 @@ static void lower_decl(IRModule *mod, ASTNode *decl) {
         for (int d = 0; d < decl->ns_decl.count; d++) {
             lower_decl(mod, decl->ns_decl.decls[d]);
         }
+    } else if (decl->kind == AST_DECL_TEMPLATE && decl->template_decl.decl &&
+               decl->template_decl.decl->kind == AST_STMT_VAR_DECL) {
+        lower_decl(mod, decl->template_decl.decl);
     } else if (decl->kind == AST_STMT_VAR_DECL) {
         if (decl->var_decl.is_extern) return;
-        IRGlobalVar *g = arena_alloc_zero(mod->arena, sizeof(IRGlobalVar));
         Symbol *sym = decl->var_decl.sym;
         const char *gname = sym ? (sym->mangled_name ? sym->mangled_name : sym->name) : decl->var_decl.name;
         char clean_name[256];
@@ -1548,7 +1836,16 @@ static void lower_decl(IRModule *mod, ASTNode *decl) {
                 clean_name[i] = '_';
             }
         }
-        g->name = arena_strdup(mod->arena, clean_name);
+        IRGlobalVar *g = NULL;
+        for (IRGlobalVar *existing = mod->globals; existing; existing = existing->next) {
+            if (!strcmp(existing->name, clean_name)) { g = existing; break; }
+        }
+        if (g && !decl->var_decl.init) return;
+        bool is_new = g == NULL;
+        if (is_new) {
+            g = arena_alloc_zero(mod->arena, sizeof(IRGlobalVar));
+            g->name = arena_strdup(mod->arena, clean_name);
+        }
         g->is_internal = decl->var_decl.is_static;
         size_t sz = (decl->var_decl.var_type && decl->var_decl.var_type->size > 0) ? decl->var_decl.var_type->size : 8;
         if (sz < 8) sz = 8;
@@ -1557,7 +1854,22 @@ static void lower_decl(IRModule *mod, ASTNode *decl) {
             if (decl->var_decl.init->kind == AST_LIT_INT) {
                 g->is_init = true;
                 g->init_val = decl->var_decl.init->int_val;
-            } else if (decl->var_decl.init->kind == AST_LIT_STR) {
+            } else if (decl->var_decl.init->kind == AST_LIT_FLOAT) {
+                uint64_t bits = 0;
+                if (decl->var_decl.var_type == g_type_float) {
+                    float value = (float)decl->var_decl.init->float_val;
+                    uint32_t narrow;
+                    memcpy(&narrow, &value, sizeof(narrow));
+                    bits = narrow;
+                } else {
+                    memcpy(&bits, &decl->var_decl.init->float_val, sizeof(bits));
+                }
+                g->is_init = true;
+                g->init_val = (int64_t)bits;
+            } else if (decl->var_decl.init->kind == AST_LIT_STR &&
+                       (!decl->var_decl.var_type ||
+                        (decl->var_decl.var_type->kind != TYPE_ARRAY &&
+                         decl->var_decl.var_type->kind != TYPE_CLASS))) {
                 const char *lbl = add_string_literal(mod, decl->var_decl.init->str_lit.val, decl->var_decl.init->str_lit.len);
                 g->is_init = true;
                 g->init_label = lbl;
@@ -1591,23 +1903,24 @@ static void lower_decl(IRModule *mod, ASTNode *decl) {
                 }
                 g->is_init = true;
                 g->init_label = arena_strdup(mod->arena, clean_lbl);
-            } else if (decl->var_decl.init->kind == AST_INIT_LIST) {
+            } else {
                 g->is_init = true;
-                g->init_count = decl->var_decl.init->init_list.count;
                 Type *scalar = decl->var_decl.var_type;
                 while (scalar->kind == TYPE_ARRAY) scalar = scalar->array.base;
                 g->elem_size = (int)scalar->size;
-                g->init_values = arena_alloc_zero(mod->arena, sizeof(int64_t) * (size_t)g->init_count);
-                for (int i = 0; i < g->init_count; i++) {
-                    ASTNode *item = decl->var_decl.init->init_list.items[i];
-                    bool ok = true;
-                    g->init_values[i] = eval_integer_constant(item, &ok);
-                    if (!ok) diag_report(DIAG_ERROR, item->loc, "global initializer must be constant");
-                }
+                size_t capacity = g->size > 0 ? g->size : 1;
+                g->init_values = arena_alloc_zero(mod->arena, sizeof(int64_t) * capacity);
+                g->init_labels = arena_alloc_zero(mod->arena, sizeof(char *) * capacity);
+                g->init_offsets = arena_alloc_zero(mod->arena, sizeof(int) * capacity);
+                g->init_sizes = arena_alloc_zero(mod->arena, sizeof(int) * capacity);
+                add_global_initializer(mod, g, decl->var_decl.var_type, decl->var_decl.init, 0,
+                                       &g->init_count);
             }
         }
-        g->next = mod->globals;
-        mod->globals = g;
+        if (is_new) {
+            g->next = mod->globals;
+            mod->globals = g;
+        }
     }
 }
 

@@ -7,6 +7,7 @@ typedef enum {
     TOK_EOF = 0,
     TOK_IDENT = 256,
     TOK_INT_LIT,
+    TOK_FLOAT_LIT,
     TOK_CHAR_LIT,
     TOK_STR_LIT,
 
@@ -126,13 +127,14 @@ struct Token {
     TokenKind kind;
     SourceLoc loc;
     int64_t int_val;
+    double float_val;
     const char *str_val; /* Interned string for identifiers / string literals */
 };
 
 #define MAX_INCLUDE_DEPTH 128
 #define MAX_INCLUDE_PATHS 64
 #define MAX_PRAGMA_ONCE 256
-#define MAX_MACRO_DEFS 512
+#define INITIAL_MACRO_DEFS 512
 #define MAX_MACRO_PARAMS 64
 
 typedef struct {
@@ -167,8 +169,11 @@ typedef struct {
 } CondState;
 
 typedef struct Lexer {
+    bool c_mode;
     LexerBuffer buffers[MAX_INCLUDE_DEPTH];
     int depth;
+    const char *disabled_macros[MAX_INCLUDE_DEPTH];
+    int disabled_macro_count;
 
     /* Include paths from -I */
     const char *include_paths[MAX_INCLUDE_PATHS];
@@ -179,8 +184,9 @@ typedef struct Lexer {
     int pragma_once_count;
 
     /* Macro definitions */
-    MacroDef macro_defs[MAX_MACRO_DEFS];
+    MacroDef *macro_defs;
     int macro_def_count;
+    int macro_def_capacity;
 
 #define MAX_INCLUDED_FILES 256
 

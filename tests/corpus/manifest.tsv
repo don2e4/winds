@@ -1,1 +1,4 @@
-zlib	v1.3.1	51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf	https://github.com/madler/zlib.git	adler32.c
+zlib	v1.3.2	da607da739fa6047df13e66a2af6b8bec7c2a498	https://github.com/madler/zlib.git	adler32.c,compress.c,crc32.c,deflate.c,gzclose.c,gzlib.c,gzread.c,gzwrite.c,inflate.c,infback.c,inftrees.c,inffast.c,trees.c,uncompr.c,zutil.c
+cjson	v1.7.19	c859b25da02955fef659d658b8f324b5cde87be3	https://github.com/DaveGamble/cJSON.git	cJSON.c
+sqlite	3.53.4	b1dd5d74ec7f29055a6684fa06fb3c2f6821c87dd38f9a458dfd2e8a1db28189	https://sqlite.org/2026/sqlite-amalgamation-3530400.zip	sqlite3.c
+pugixml	v1.15	ee86beb30e4973f5feffe3ce63bfa4fbadf72f38	https://github.com/zeux/pugixml.git	src/pugixml.cpp

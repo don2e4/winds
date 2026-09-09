@@ -3,8 +3,11 @@
 
 #include <cstddef>
 
+typedef void FILE;
+
 extern int printf(const char *format, ...);
 extern int scanf(const char *format, ...);
+extern int sscanf(const char *s, const char *format, ...);
 extern int puts(const char *s);
 extern int putchar(int c);
 extern int getchar();
@@ -13,6 +16,8 @@ extern int fputc(int c, void *stream);
 extern void *fopen(const char *pathname, const char *mode);
 extern int fclose(void *stream);
 extern int fflush(void *stream);
+extern int ferror(FILE *stream);
+extern int fileno(FILE *stream);
 extern size_t fread(void *ptr, size_t size, size_t nmemb, void *stream);
 extern size_t fwrite(const void *ptr, size_t size, size_t nmemb, void *stream);
 extern int snprintf(char *s, size_t n, const char *format, ...);

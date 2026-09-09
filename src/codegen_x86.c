@@ -71,6 +71,16 @@ static void emit_store_rcx(FILE *out, IROperand dest, RegAlloc *ra, int base_sta
     emit_store_from_reg(out, "%rcx", dest, ra, base_stack);
 }
 
+static void emit_operand_to_xmm(FILE *out, const char *xmm, IROperand op, RegAlloc *ra, int base_stack) {
+    emit_operand_to_rax(out, op, ra, base_stack);
+    fprintf(out, "\t%s\t%%rax, %s\n", op.fp_size == 4 ? "movd" : "movq", xmm);
+}
+
+static void emit_xmm_to_operand(FILE *out, const char *xmm, IROperand dest, RegAlloc *ra, int base_stack) {
+    fprintf(out, "\t%s\t%s, %%rax\n", dest.fp_size == 4 ? "movd" : "movq", xmm);
+    emit_store_rax(out, dest, ra, base_stack);
+}
+
 static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
     int local_stack = (fn->stack_size + 15) & ~15;
 
@@ -189,6 +199,9 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                     if (arg_num >= 0 && arg_num < 6) {
                         fprintf(out, "\tmovq\t%s, %d(%%rbp)\n", k_arg_regs_64[arg_num], inst->dest.offset);
                     }
+                } else if (inst->src1.vreg == -3) {
+                    int arg_num = (int)inst->src1.imm;
+                    fprintf(out, "\t%s\t%%xmm%d, %d(%%rbp)\n", inst->src1.fp_size == 4 ? "movss" : "movsd", arg_num, inst->dest.offset);
                 } else if (inst->src1.vreg == -2) {
                     /* Incoming stack argument from caller: 16(%rbp), 24(%rbp), etc. */
                     int incoming_stack_off = (int)inst->src1.imm;
@@ -219,9 +232,11 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
             case IR_LOAD:
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 if (inst->size == 1) {
-                    fprintf(out, "\tmovsbq\t%d(%%rax), %%rcx\n", inst->src2.offset);
+                    fprintf(out, inst->dest.is_unsigned ? "\tmovzbq\t%d(%%rax), %%rcx\n" : "\tmovsbq\t%d(%%rax), %%rcx\n", inst->src2.offset);
+                } else if (inst->size == 2) {
+                    fprintf(out, inst->dest.is_unsigned ? "\tmovzwq\t%d(%%rax), %%rcx\n" : "\tmovswq\t%d(%%rax), %%rcx\n", inst->src2.offset);
                 } else if (inst->size == 4) {
-                    fprintf(out, "\tmovslq\t%d(%%rax), %%rcx\n", inst->src2.offset);
+                    fprintf(out, inst->dest.is_unsigned ? "\tmovl\t%d(%%rax), %%ecx\n" : "\tmovslq\t%d(%%rax), %%rcx\n", inst->src2.offset);
                 } else {
                     fprintf(out, "\tmovq\t%d(%%rax), %%rcx\n", inst->src2.offset);
                 }
@@ -233,6 +248,8 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                 emit_operand_to_rax(out, inst->dest, ra, local_stack); /* ptr in rax */
                 if (inst->size == 1) {
                     fprintf(out, "\tmovb\t%%cl, %d(%%rax)\n", inst->dest.offset);
+                } else if (inst->size == 2) {
+                    fprintf(out, "\tmovw\t%%cx, %d(%%rax)\n", inst->dest.offset);
                 } else if (inst->size == 4) {
                     fprintf(out, "\tmovl\t%%ecx, %d(%%rax)\n", inst->dest.offset);
                 } else {
@@ -241,6 +258,13 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                 break;
 
             case IR_ADD:
+                if (inst->src1.fp_size) {
+                    emit_operand_to_xmm(out, "%xmm0", inst->src1, ra, local_stack);
+                    emit_operand_to_xmm(out, "%xmm1", inst->src2, ra, local_stack);
+                    fprintf(out, "\t%s\t%%xmm1, %%xmm0\n", inst->src1.fp_size == 4 ? "addss" : "addsd");
+                    emit_xmm_to_operand(out, "%xmm0", inst->dest, ra, local_stack);
+                    break;
+                }
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 if (!inst->src2.vreg && inst->src2.imm == 1) {
                     fprintf(out, "\tincq\t%%rax\n");
@@ -253,6 +277,13 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                 break;
 
             case IR_SUB:
+                if (inst->src1.fp_size) {
+                    emit_operand_to_xmm(out, "%xmm0", inst->src1, ra, local_stack);
+                    emit_operand_to_xmm(out, "%xmm1", inst->src2, ra, local_stack);
+                    fprintf(out, "\t%s\t%%xmm1, %%xmm0\n", inst->src1.fp_size == 4 ? "subss" : "subsd");
+                    emit_xmm_to_operand(out, "%xmm0", inst->dest, ra, local_stack);
+                    break;
+                }
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 if (!inst->src2.vreg && inst->src2.imm == 1) {
                     fprintf(out, "\tdecq\t%%rax\n");
@@ -265,6 +296,13 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                 break;
 
             case IR_MUL:
+                if (inst->src1.fp_size) {
+                    emit_operand_to_xmm(out, "%xmm0", inst->src1, ra, local_stack);
+                    emit_operand_to_xmm(out, "%xmm1", inst->src2, ra, local_stack);
+                    fprintf(out, "\t%s\t%%xmm1, %%xmm0\n", inst->src1.fp_size == 4 ? "mulss" : "mulsd");
+                    emit_xmm_to_operand(out, "%xmm0", inst->dest, ra, local_stack);
+                    break;
+                }
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\timulq\t%%rcx, %%rax\n");
@@ -272,18 +310,23 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                 break;
 
             case IR_DIV:
+                if (inst->src1.fp_size) {
+                    emit_operand_to_xmm(out, "%xmm0", inst->src1, ra, local_stack);
+                    emit_operand_to_xmm(out, "%xmm1", inst->src2, ra, local_stack);
+                    fprintf(out, "\t%s\t%%xmm1, %%xmm0\n", inst->src1.fp_size == 4 ? "divss" : "divsd");
+                    emit_xmm_to_operand(out, "%xmm0", inst->dest, ra, local_stack);
+                    break;
+                }
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 emit_operand_to_rcx(out, inst->src2, ra, local_stack);
-                fprintf(out, "\tcqto\n");
-                fprintf(out, "\tidivq\t%%rcx\n");
+                fprintf(out, inst->is_unsigned ? "\txorq\t%%rdx, %%rdx\n\tdivq\t%%rcx\n" : "\tcqto\n\tidivq\t%%rcx\n");
                 emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
 
             case IR_MOD:
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 emit_operand_to_rcx(out, inst->src2, ra, local_stack);
-                fprintf(out, "\tcqto\n");
-                fprintf(out, "\tidivq\t%%rcx\n");
+                fprintf(out, inst->is_unsigned ? "\txorq\t%%rdx, %%rdx\n\tdivq\t%%rcx\n" : "\tcqto\n\tidivq\t%%rcx\n");
                 fprintf(out, "\tmovq\t%%rdx, %%rax\n");
                 emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
@@ -323,10 +366,10 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
             case IR_SHR:
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 if (inst->src2.vreg == 0) {
-                    fprintf(out, "\tsarq\t$%ld, %%rax\n", (long)inst->src2.imm);
+                    fprintf(out, inst->is_unsigned ? "\tshrq\t$%ld, %%rax\n" : "\tsarq\t$%ld, %%rax\n", (long)inst->src2.imm);
                 } else {
                     emit_operand_to_rcx(out, inst->src2, ra, local_stack);
-                    fprintf(out, "\tsarq\t%%cl, %%rax\n");
+                    fprintf(out, inst->is_unsigned ? "\tshrq\t%%cl, %%rax\n" : "\tsarq\t%%cl, %%rax\n");
                 }
                 emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
@@ -337,6 +380,15 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
             case IR_CMP_LE:
             case IR_CMP_GT:
             case IR_CMP_GE: {
+                if (inst->src1.fp_size) {
+                    emit_operand_to_xmm(out, "%xmm0", inst->src1, ra, local_stack);
+                    emit_operand_to_xmm(out, "%xmm1", inst->src2, ra, local_stack);
+                    fprintf(out, "\t%s\t%%xmm1, %%xmm0\n", inst->src1.fp_size == 4 ? "ucomiss" : "ucomisd");
+                    const char *fp_cc[] = {"sete", "setne", "setb", "setbe", "seta", "setae"};
+                    fprintf(out, "\t%s\t%%al\n\tmovzbq\t%%al, %%rax\n", fp_cc[inst->op - IR_CMP_EQ]);
+                    emit_store_rax(out, inst->dest, ra, local_stack);
+                    break;
+                }
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 emit_operand_to_rcx(out, inst->src2, ra, local_stack);
                 fprintf(out, "\tcmpq\t%%rcx, %%rax\n");
@@ -347,8 +399,13 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                     (branch->op == IR_JMP_IF_ZERO || branch->op == IR_JMP_IF_NOT_ZERO)) {
                     const char *normal[] = {"je", "jne", "jl", "jle", "jg", "jge"};
                     const char *inverse[] = {"jne", "je", "jge", "jg", "jle", "jl"};
+                    const char *unsigned_normal[] = {"je", "jne", "jb", "jbe", "ja", "jae"};
+                    const char *unsigned_inverse[] = {"jne", "je", "jae", "ja", "jbe", "jb"};
                     int cc = inst->op - IR_CMP_EQ;
-                    fprintf(out, "\t%s\t%s\n", branch->op == IR_JMP_IF_ZERO ? inverse[cc] : normal[cc], branch->dest.label);
+                    const char **conditions = branch->op == IR_JMP_IF_ZERO
+                                            ? (inst->is_unsigned ? unsigned_inverse : inverse)
+                                            : (inst->is_unsigned ? unsigned_normal : normal);
+                    fprintf(out, "\t%s\t%s\n", conditions[cc], branch->dest.label);
                     inst = branch;
                     break;
                 }
@@ -362,6 +419,8 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                     case IR_CMP_GE: set_cc = "setge"; break;
                     default: break;
                 }
+                if (inst->is_unsigned && inst->op >= IR_CMP_LT)
+                    set_cc = (const char *[]){"setb", "setbe", "seta", "setae"}[inst->op - IR_CMP_LT];
                 fprintf(out, "\t%s\t%%al\n", set_cc);
                 fprintf(out, "\tmovzbq\t%%al, %%rax\n");
                 emit_store_rax(out, inst->dest, ra, local_stack);
@@ -417,30 +476,38 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                     fprintf(out, "\tleaq\t%d(%%rbp), %%rcx\n\tmovq\t%%rcx, 16(%%rax)\n", fn->va_save_offset);
                     break;
                 }
-                int n_stack = (inst->call_arg_count > 6) ? (inst->call_arg_count - 6) : 0;
+                int gp_count = 0, fp_count = 0, n_stack = 0;
+                for (int i = 0; i < inst->call_arg_count; i++) {
+                    if (inst->call_args[i].on_stack) n_stack++;
+                    else if (inst->call_args[i].fp_size) { if (fp_count++ >= 8) n_stack++; }
+                    else if (gp_count++ >= 6) n_stack++;
+                }
                 int stack_arg_space = 0;
                 if (n_stack > 0) {
                     stack_arg_space = ((n_stack * 8) + 15) & ~15;
                     fprintf(out, "\tsubq\t$%d, %%rsp\n", stack_arg_space);
-                    for (int i = 6; i < inst->call_arg_count; i++) {
-                        emit_operand_to_rax(out, inst->call_args[i], ra, local_stack);
-                        fprintf(out, "\tmovq\t%%rax, %d(%%rsp)\n", (i - 6) * 8);
-                    }
                 }
 
-                /* System V ABI: first 6 integer/pointer args in rdi, rsi, rdx, rcx, r8, r9 */
-                for (int i = 0; i < inst->call_arg_count && i < 6; i++) {
-                    emit_operand_to_reg(out, k_arg_regs_64[i], inst->call_args[i], ra, local_stack);
+                gp_count = fp_count = 0;
+                int stack_index = 0;
+                for (int i = 0; i < inst->call_arg_count; i++) {
+                    IROperand arg = inst->call_args[i];
+                    if (!arg.on_stack && arg.fp_size && fp_count < 8) emit_operand_to_xmm(out, fp_count++ == 0 ? "%xmm0" : fp_count == 2 ? "%xmm1" : fp_count == 3 ? "%xmm2" : fp_count == 4 ? "%xmm3" : fp_count == 5 ? "%xmm4" : fp_count == 6 ? "%xmm5" : fp_count == 7 ? "%xmm6" : "%xmm7", arg, ra, local_stack);
+                    else if (!arg.on_stack && !arg.fp_size && gp_count < 6) emit_operand_to_reg(out, k_arg_regs_64[gp_count++], arg, ra, local_stack);
+                    else {
+                        emit_operand_to_rax(out, arg, ra, local_stack);
+                        fprintf(out, "\tmovq\t%%rax, %d(%%rsp)\n", stack_index++ * 8);
+                    }
                 }
 
                 if (inst->src1.label != NULL) {
                     /* Clear %al for variadic function calls */
-                    fprintf(out, "\txorl\t%%eax, %%eax\n");
+                    fprintf(out, "\tmovb\t$%d, %%al\n", fp_count);
                     fprintf(out, "\tcall\t%s@PLT\n", inst->src1.label);
                 } else {
                     emit_operand_to_reg(out, "%r11", inst->src1, ra, local_stack);
                     /* Clear %al for variadic function calls */
-                    fprintf(out, "\txorl\t%%eax, %%eax\n");
+                    fprintf(out, "\tmovb\t$%d, %%al\n", fp_count);
                     fprintf(out, "\tcall\t*%%r11\n");
                 }
 
@@ -448,13 +515,37 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                     fprintf(out, "\taddq\t$%d, %%rsp\n", stack_arg_space);
                 }
 
-                emit_store_rax(out, inst->dest, ra, local_stack);
+                if (inst->dest.fp_size) emit_xmm_to_operand(out, "%xmm0", inst->dest, ra, local_stack);
+                else emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
             }
 
             case IR_RET:
-                emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                if (inst->src1.fp_size) emit_operand_to_xmm(out, "%xmm0", inst->src1, ra, local_stack);
+                else emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 fprintf(out, "\tjmp\t%s\n", epilogue_label);
+                break;
+
+            case IR_CAST:
+                if (!inst->src1.fp_size && inst->dest.fp_size) {
+                    emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                    fprintf(out, "\t%s\t%%rax, %%xmm0\n", inst->dest.fp_size == 4 ? "cvtsi2ssq" : "cvtsi2sdq");
+                    emit_xmm_to_operand(out, "%xmm0", inst->dest, ra, local_stack);
+                } else if (inst->src1.fp_size && !inst->dest.fp_size) {
+                    emit_operand_to_xmm(out, "%xmm0", inst->src1, ra, local_stack);
+                    fprintf(out, "\t%s\t%%xmm0, %%rax\n", inst->src1.fp_size == 4 ? "cvttss2siq" : "cvttsd2siq");
+                    emit_store_rax(out, inst->dest, ra, local_stack);
+                } else if (!inst->src1.fp_size && !inst->dest.fp_size) {
+                    emit_operand_to_rax(out, inst->src1, ra, local_stack);
+                    if (inst->size == 1) fprintf(out, inst->dest.is_unsigned ? "\tmovzbq\t%%al, %%rax\n" : "\tmovsbq\t%%al, %%rax\n");
+                    else if (inst->size == 2) fprintf(out, inst->dest.is_unsigned ? "\tmovzwq\t%%ax, %%rax\n" : "\tmovswq\t%%ax, %%rax\n");
+                    else if (inst->size == 4) fprintf(out, inst->dest.is_unsigned ? "\tmovl\t%%eax, %%eax\n" : "\tmovslq\t%%eax, %%rax\n");
+                    emit_store_rax(out, inst->dest, ra, local_stack);
+                } else {
+                    emit_operand_to_xmm(out, "%xmm0", inst->src1, ra, local_stack);
+                    fprintf(out, "\t%s\t%%xmm0, %%xmm0\n", inst->src1.fp_size == 4 ? "cvtss2sd" : "cvtsd2ss");
+                    emit_xmm_to_operand(out, "%xmm0", inst->dest, ra, local_stack);
+                }
                 break;
 
             case IR_ADDR_GLOBAL:
@@ -463,8 +554,9 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
                 break;
 
             case IR_LOAD_GLOBAL:
-                if (inst->size == 1) fprintf(out, "\tmovsbq\t%s(%%rip), %%rax\n", inst->src1.label);
-                else if (inst->size == 4) fprintf(out, "\tmovslq\t%s(%%rip), %%rax\n", inst->src1.label);
+                if (inst->size == 1) fprintf(out, inst->dest.is_unsigned ? "\tmovzbq\t%s(%%rip), %%rax\n" : "\tmovsbq\t%s(%%rip), %%rax\n", inst->src1.label);
+                else if (inst->size == 2) fprintf(out, inst->dest.is_unsigned ? "\tmovzwq\t%s(%%rip), %%rax\n" : "\tmovswq\t%s(%%rip), %%rax\n", inst->src1.label);
+                else if (inst->size == 4) fprintf(out, inst->dest.is_unsigned ? "\tmovl\t%s(%%rip), %%eax\n" : "\tmovslq\t%s(%%rip), %%rax\n", inst->src1.label);
                 else fprintf(out, "\tmovq\t%s(%%rip), %%rax\n", inst->src1.label);
                 emit_store_rax(out, inst->dest, ra, local_stack);
                 break;
@@ -472,6 +564,7 @@ static void codegen_function(IRFunction *fn, FILE *out, Arena *arena) {
             case IR_STORE_GLOBAL:
                 emit_operand_to_rax(out, inst->src1, ra, local_stack);
                 if (inst->size == 1) fprintf(out, "\tmovb\t%%al, %s(%%rip)\n", inst->dest.label);
+                else if (inst->size == 2) fprintf(out, "\tmovw\t%%ax, %s(%%rip)\n", inst->dest.label);
                 else if (inst->size == 4) fprintf(out, "\tmovl\t%%eax, %s(%%rip)\n", inst->dest.label);
                 else fprintf(out, "\tmovq\t%%rax, %s(%%rip)\n", inst->dest.label);
                 break;
@@ -513,6 +606,8 @@ bool codegen_x86_emit(IRModule *mod, FILE *out) {
                 else if (c == '\t') fprintf(out, "\\t");
                 else if (c == '\"') fprintf(out, "\\\"");
                 else if (c == '\\') fprintf(out, "\\\\");
+                else if ((unsigned char)c < 32 || (unsigned char)c >= 127)
+                    fprintf(out, "\\%03o", (unsigned char)c);
                 else fputc(c, out);
             }
             fprintf(out, "\"\n");
@@ -528,15 +623,22 @@ bool codegen_x86_emit(IRModule *mod, FILE *out) {
                 fprintf(out, "\t.data\n\t.align 8\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n\t.quad\t%s\n",
                         g->name, g->name, g->size, g->name, g->init_label);
             } else if (g->init_values) {
-                const char *directive = g->elem_size == 1 ? ".byte" :
-                                        g->elem_size == 2 ? ".short" :
-                                        g->elem_size == 4 ? ".long" : ".quad";
                 fprintf(out, "\t.data\n\t.align %d\n\t.type\t%s, @object\n\t.size\t%s, %zu\n%s:\n",
-                        g->elem_size, g->name, g->name, g->size, g->name);
+                        g->elem_size >= 8 ? 8 : g->elem_size >= 4 ? 4 : g->elem_size >= 2 ? 2 : 1,
+                        g->name, g->name, g->size, g->name);
+                size_t initialized = 0;
                 for (int i = 0; i < g->init_count; i++) {
-                    fprintf(out, "\t%s\t%ld\n", directive, (long)g->init_values[i]);
+                    int size = g->init_sizes ? g->init_sizes[i] : g->elem_size;
+                    int offset = g->init_offsets ? g->init_offsets[i] : i * g->elem_size;
+                    const char *directive = size == 1 ? ".byte" : size == 2 ? ".short" :
+                                            size == 4 ? ".long" : ".quad";
+                    if ((size_t)offset > initialized) fprintf(out, "\t.zero\t%zu\n", (size_t)offset - initialized);
+                    if (g->init_labels && g->init_labels[i])
+                        fprintf(out, "\t%s\t%s\n", directive, g->init_labels[i]);
+                    else
+                        fprintf(out, "\t%s\t%ld\n", directive, (long)g->init_values[i]);
+                    initialized = (size_t)offset + (size_t)size;
                 }
-                size_t initialized = (size_t)g->init_count * (size_t)g->elem_size;
                 if (initialized < g->size) fprintf(out, "\t.zero\t%zu\n", g->size - initialized);
             } else {
                 const char *directive = g->size == 1 ? ".byte" : g->size == 4 ? ".long" : ".quad";

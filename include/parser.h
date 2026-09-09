@@ -10,6 +10,7 @@
 
 typedef struct TypeNameNode {
     const char *name;
+    Type *type;
     struct TypeNameNode *next;
 } TypeNameNode;
 
@@ -18,6 +19,12 @@ typedef struct EnumConstant {
     int64_t value;
     struct EnumConstant *next;
 } EnumConstant;
+
+typedef struct ValueNameNode {
+    const char *name;
+    Type *type;
+    struct ValueNameNode *next;
+} ValueNameNode;
 
 typedef struct {
     EnumConstant *constants;
@@ -31,6 +38,9 @@ typedef struct {
     ASTNode *pending_decls[32];
     int pending_decl_count;
     TypeNameNode **type_table;
+    ValueNameNode **value_table;
+    Type *last_type_base;
+    bool last_type_const;
 } Parser;
 
 /* Initialize parser */

@@ -40,6 +40,7 @@ typedef enum {
     IR_ADDR_GLOBAL,
     IR_LOAD_GLOBAL,
     IR_STORE_GLOBAL
+    ,IR_CAST
 } IROp;
 
 typedef struct {
@@ -47,6 +48,9 @@ typedef struct {
     int64_t imm;        /* Immediate value */
     const char *label;  /* String or label identifier */
     int offset;         /* Stack/struct offset */
+    int fp_size;        /* 0 for GP values, otherwise 4 or 8-byte IEEE-754 bits */
+    bool is_unsigned;
+    bool on_stack;      /* Aggregate argument that must be passed entirely in memory. */
 } IROperand;
 
 typedef struct IRInst {
@@ -57,6 +61,7 @@ typedef struct IRInst {
     IROperand *call_args;
     int call_arg_count;
     int size; /* Load/store size in bytes (1, 4, 8) */
+    bool is_unsigned;
     struct IRInst *next;
     struct IRInst *prev;
 } IRInst;
@@ -88,6 +93,9 @@ typedef struct IRGlobalVar {
     const char *init_label;
     bool is_init;
     int64_t *init_values;
+    const char **init_labels;
+    int *init_offsets;
+    int *init_sizes;
     int init_count;
     int elem_size;
     bool is_internal;

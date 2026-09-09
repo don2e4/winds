@@ -27,6 +27,7 @@ static void print_help(const char *prog_name) {
     printf("  -Werror                  Treat all warnings as errors\n");
     printf("  -Wall, -Wextra           Enable compiler warnings\n");
     printf("  -fdiagnostics-color[=..] Set colored diagnostics (always, never, auto)\n");
+    printf("  -fno-exceptions, -fno-rtti Disable unsupported C++ runtime features\n");
     printf("  -v, --verbose            Display compiler timing and build pipeline stages\n");
     printf("  -h, --help               Display this help information\n");
     printf("  --version                Display compiler version\n");
@@ -125,6 +126,8 @@ int main(int argc, char **argv) {
             config.color_diagnostics = "always";
         } else if (strcmp(arg, "-fno-diagnostics-color") == 0) {
             config.color_diagnostics = "never";
+        } else if (strcmp(arg, "-fno-exceptions") == 0 || strcmp(arg, "-fno-rtti") == 0) {
+            /* Winds never emits exception or RTTI runtime metadata. */
         } else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
             config.verbose = true;
         } else if (strcmp(arg, "-E") == 0 || strcmp(arg, "-e") == 0) {

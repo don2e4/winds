@@ -1,0 +1,6 @@
+#ifndef winds_new_h
+#define winds_new_h
+
+/* Placement new is a compiler builtin. */
+
+#endif

@@ -268,7 +268,10 @@ int driver_run(const DriverConfig *config) {
     /* 1. Parse */
     Parser parser;
     parser_init(&parser, arena, source, config->input_file);
-    if (is_c_source(config->input_file)) lexer_undefine_macro(&parser.lexer, "__cplusplus");
+    if (is_c_source(config->input_file)) {
+        parser.lexer.c_mode = true;
+        lexer_undefine_macro(&parser.lexer, "__cplusplus");
+    }
     for (int i = 0; i < config->undefine_count; i++) {
         lexer_undefine_macro(&parser.lexer, config->undefines[i]);
     }

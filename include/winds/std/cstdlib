@@ -11,6 +11,8 @@ extern void exit(int status);
 extern void abort();
 extern int atoi(const char *nptr);
 extern int abs(int j);
+extern double strtod(const char *nptr, char **endptr);
+extern char *getenv(const char *name);
 
 #ifdef __cplusplus
 namespace std {

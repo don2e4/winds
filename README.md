@@ -338,7 +338,7 @@ ctest --test-dir build --output-on-failure
 
 ### test suites
 
-winds includes 26 automated test suites covering syntax, semantics, standard library, and code generation:
+winds includes 29 automated test suites covering syntax, semantics, standard library, and code generation:
 
 - `01_basics.cpp` &mdash; variables, arithmetic precedence, loops, and branches
 - `02_functions.cpp` &mdash; function overloading, pass-by-reference, and recursion
@@ -366,8 +366,11 @@ winds includes 26 automated test suites covering syntax, semantics, standard lib
 - `24_branch_fusion.c` &mdash; fused compare-and-branch codegen and algebraic strength reduction
 - `25_preprocessor_e.sh` &mdash; `-e` token emission, default output naming, and toolchain flags
 - `26_varargs.c` &mdash; system v amd64 variable argument abi (`va_list`, `va_start`, `va_arg`, `va_copy`, `va_end`)
+- `27_floating.c` &mdash; native floating-point literals, arithmetic, conversions, comparisons, and system v amd64 calls
+- `28_struct_copy.c` &mdash; whole-struct assignment for locals, globals, members, and returned values
+- `29_cpp_compat.cpp` &mdash; anonymous namespaces, placement new, named casts, qualified types, and legacy c++ syntax
 
-`make corpus-test` checks an unchanged, pinned zlib 1.3.1 translation unit by compiling it with winds, linking it to a gcc-built c harness, and validating its checksum output. Set `ZLIB_SOURCE` to an existing checkout for an offline run.
+`make corpus-test` builds unchanged, pinned releases of full zlib, cJSON, and SQLite, links them to small gcc-built c harnesses, and compiles pugixml without exceptions, RTTI, or the system c++ standard library. Set `ZLIB_SOURCE`, `CJSON_SOURCE`, `SQLITE_SOURCE`, and `PUGIXML_SOURCE` to verified source directories for an offline run. CMake exposes the same gate with `-DWINDS_ENABLE_CORPUS_TESTS=ON`.
 
 ## roadmap
 
@@ -376,8 +379,8 @@ winds includes 26 automated test suites covering syntax, semantics, standard lib
 - [x] **phase 3**: function pointers, pointers to members, parameterized preprocessor macros, variadic templates and standard tuple
 - [x] **phase 4a**: multi-file builds, external object/library linking, c linkage, curated libc headers, and the first pinned real-world zlib corpus gate
 - [x] **phase 4b**: c foundation expansion (unions, standalone enums, multidimensional arrays, varargs abi, preprocessing mode)
-- [ ] **phase 4c**: complete the corpus-driven c foundation required by full zlib, cjson, and sqlite builds
-- [ ] **phase 4d**: compile pugixml without exceptions, rtti, or the system c++ standard library
+- [x] **phase 4c**: complete the corpus-driven c foundation required by full zlib, cjson, and sqlite builds
+- [x] **phase 4d**: compile pugixml without exceptions, rtti, or the system c++ standard library
 
 ## license
 

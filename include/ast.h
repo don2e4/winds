@@ -12,6 +12,8 @@ typedef enum {
     TYPE_CHAR,
     TYPE_INT,
     TYPE_LONG,
+    TYPE_FLOAT,
+    TYPE_DOUBLE,
     TYPE_PTR,
     TYPE_REF,
     TYPE_ARRAY,
@@ -32,6 +34,7 @@ typedef struct Field {
     struct Type *type;
     int offset;
     int access; /* 0: public, 1: protected, 2: private */
+    bool is_static;
     struct Field *next;
 } Field;
 
@@ -39,8 +42,8 @@ struct Type {
     TypeKind kind;
     size_t size;
     size_t align;
-    bool unsupported_float;
     const char *name; /* Name for classes/primitives */
+    bool is_unsigned;
 
     /* Type details */
     union {
@@ -57,6 +60,9 @@ struct Type {
         struct {
             const char *class_name;
             Field *fields;
+            struct Type **bases;
+            int base_count;
+            bool is_dependent;
             size_t total_size;
             bool is_struct;
             bool is_union;
@@ -86,6 +92,8 @@ extern Type *g_type_bool;
 extern Type *g_type_char;
 extern Type *g_type_int;
 extern Type *g_type_long;
+extern Type *g_type_float;
+extern Type *g_type_double;
 
 void type_system_init(Arena *arena);
 Type *type_new(Arena *arena, TypeKind kind);
@@ -95,6 +103,7 @@ Type *type_array(Arena *arena, Type *base, size_t count);
 Type *type_func(Arena *arena, Type *ret, TypeParam *params, int count, bool varargs);
 bool type_equals(Type *a, Type *b);
 bool type_is_integer(Type *t);
+bool type_is_float(Type *t);
 bool type_is_pointer_or_ref(Type *t);
 Type *type_func_ptr(Arena *arena, Type *ret, TypeParam *params, int count, bool varargs);
 bool type_is_func_ptr(Type *t);
@@ -106,6 +115,7 @@ const char *type_to_string(Arena *arena, Type *t);
 typedef enum {
     /* Expressions */
     AST_LIT_INT,
+    AST_LIT_FLOAT,
     AST_LIT_STR,
     AST_LIT_BOOL,
     AST_LIT_NULLPTR,
@@ -164,6 +174,9 @@ struct ASTNode {
     union {
         /* AST_LIT_INT */
         int64_t int_val;
+
+        /* AST_LIT_FLOAT */
+        double float_val;
 
         /* AST_LIT_STR */
         struct {
@@ -245,6 +258,7 @@ struct ASTNode {
         /* AST_NEW */
         struct {
             Type *target_type;
+            ASTNode *placement;
             ASTNode **args;
             int arg_count;
             const char *ctor_mangled_name;
