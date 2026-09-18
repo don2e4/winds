@@ -12,7 +12,7 @@
   <a href="#license"><img src="https://img.shields.io/badge/license-mit-7aa2f7.svg" alt="license" /></a>
   <a href="#benchmarks"><img src="https://img.shields.io/badge/compile_time-0.53_ms-9ece6a.svg" alt="speed" /></a>
   <a href="#why-winds-is-small-and-fast"><img src="https://img.shields.io/badge/binary_size-267_kb-e0af68.svg" alt="size" /></a>
-  <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-26_passing-9ece6a.svg" alt="tests" /></a>
+  <a href="#building-and-testing"><img src="https://img.shields.io/badge/tests-29_passing-9ece6a.svg" alt="tests" /></a>
 </p>
 
 ---
