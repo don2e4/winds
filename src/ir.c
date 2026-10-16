@@ -676,10 +676,18 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
             } else if (expr->unary.op == TOK_MINUS) {
                 IROperand opnd = lower_expr(mod, fn, expr->unary.operand);
                 res.vreg = alloc_vreg(fn);
-                IRInst *inst = make_inst(arena, IR_SUB);
+                IRInst *inst;
+                if (res.fp_size) {
+                    /* Flip the IEEE-754 sign bit; 0 - x on the raw bits is not a negation. */
+                    inst = make_inst(arena, IR_XOR);
+                    inst->src1 = cast_operand(mod, fn, opnd, expr->type);
+                    inst->src2.imm = res.fp_size == 4 ? INT64_C(0x80000000) : INT64_MIN;
+                } else {
+                    inst = make_inst(arena, IR_SUB);
+                    inst->src1.imm = 0;
+                    inst->src2 = opnd;
+                }
                 inst->dest = res;
-                inst->src1.imm = 0;
-                inst->src2 = opnd;
                 ir_emit(fn, inst);
                 return res;
             } else if (expr->unary.op == TOK_EXCL) {
@@ -1026,9 +1034,11 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
             }
 
             TypeParam *param_type_iter = NULL;
+            bool callee_varargs = false;
             if (expr->call.callee_sym && expr->call.callee_sym->type &&
                 expr->call.callee_sym->type->kind == TYPE_FUNC) {
                 param_type_iter = expr->call.callee_sym->type->func.params;
+                callee_varargs = expr->call.callee_sym->type->func.is_varargs;
             }
 
             for (int i = 0; i < expr->call.arg_count; i++) {
@@ -1103,7 +1113,10 @@ static IROperand lower_expr(IRModule *mod, IRFunction *fn, ASTNode *expr) {
                     }
                 } else {
                     IROperand arg = lower_expr(mod, fn, expr->call.args[i]);
-                    call_args[arg_idx++] = expected_t ? cast_operand(mod, fn, arg, expected_t) : arg;
+                    if (expected_t) arg = cast_operand(mod, fn, arg, expected_t);
+                    /* Default argument promotion: a float passed through ... travels as a double. */
+                    else if (callee_varargs && arg.fp_size == 4) arg = cast_operand(mod, fn, arg, g_type_double);
+                    call_args[arg_idx++] = arg;
                 }
             }
 
